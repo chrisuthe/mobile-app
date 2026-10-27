@@ -1,324 +1,243 @@
 @file:OptIn(ExperimentalMaterial3Api::class)
+@file:Suppress("MagicNumber")
 
 package io.music_assistant.client.ui.compose.home
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarState
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation3.runtime.NavBackStack
-import androidx.navigation3.runtime.entryProvider
-import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
-import androidx.navigation3.ui.NavDisplay
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.server.QueueOption
+import compose.icons.TablerIcons
+import compose.icons.tablericons.GripVertical
+import io.music_assistant.client.data.model.client.ClickContext
+import io.music_assistant.client.data.model.client.Shortcut
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.nav.BackHandler
+import io.music_assistant.client.nav.ScreenState
+import io.music_assistant.client.settings.SettingsRepository
+import io.music_assistant.client.ui.compose.ScreenSemantics
+import io.music_assistant.client.ui.compose.common.CenteredProgress
+import io.music_assistant.client.ui.compose.common.CenteredText
 import io.music_assistant.client.ui.compose.common.DataState
-import io.music_assistant.client.ui.compose.common.providers.ProviderIcon
-import io.music_assistant.client.ui.compose.common.rememberToastState
+import io.music_assistant.client.ui.compose.common.UnsupportedInstallCard
+import io.music_assistant.client.ui.compose.common.items.CategoryRow
+import io.music_assistant.client.ui.compose.common.items.ItemCategory
+import io.music_assistant.client.ui.compose.common.items.ProvideClickActions
+import io.music_assistant.client.ui.compose.common.items.lazyListKey
+import io.music_assistant.client.ui.compose.common.moveToEnabledBoundary
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import io.music_assistant.client.ui.compose.common.toDisplayString
 import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
-import io.music_assistant.client.ui.compose.home.nav.HomeNavScreen
-import io.music_assistant.client.ui.compose.home.nav.rememberHomeNavBackStack
-import io.music_assistant.client.ui.compose.item.ItemDetailsScreen
-import io.music_assistant.client.ui.compose.library.LibraryScreen
-import io.music_assistant.client.ui.compose.nav.BackHandler
-import io.music_assistant.client.ui.compose.nav.NavScreen
-import io.music_assistant.client.ui.compose.search.SearchScreen
-import io.music_assistant.client.utils.SessionState
-import kotlinx.coroutines.flow.collectLatest
-import org.koin.compose.viewmodel.koinViewModel
+import io.music_assistant.client.ui.compose.nav.TopBarLayout
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.discover_edit_rows
+import musicassistantclient.composeapp.generated.resources.discover_save_rows
+import musicassistantclient.composeapp.generated.resources.discover_shortcuts
+import musicassistantclient.composeapp.generated.resources.library_error
+import musicassistantclient.composeapp.generated.resources.nav_discover
+import musicassistantclient.composeapp.generated.resources.refresh
+import org.jetbrains.compose.resources.stringResource
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
-    viewModel: HomeScreenViewModel = koinViewModel(),
-    actionsViewModel: ActionsViewModel = koinViewModel(),
-    navigateTo: (NavScreen) -> Unit,
+    homeScreenViewModel: HomeScreenViewModel,
+    contentPadding: PaddingValues,
+    onNavigateClick: (AppMediaItem) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
+    actionsViewModel: ActionsViewModel,
+    state: HomeScreenState,
+    onOpenSettings: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
-    val toastState = rememberToastState()
+    val homeScreenState by homeScreenViewModel.state.collectAsStateWithLifecycle()
+    val unsupportedInstallServerId by homeScreenViewModel.unsupportedInstallServerId.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        viewModel.links.collectLatest { url -> uriHandler.openUri(url) }
+    // Reconciled, enabled-first ordering. Authoritative for normal-mode display.
+    val recommendationsState = homeScreenState.recommendations
+    val shortcutsState = homeScreenState.shortcuts
+    val homeRowsConfig = homeScreenState.homeRowsConfig
+    val working = remember(recommendationsState, shortcutsState, homeRowsConfig) {
+        getCategories(recommendationsState, shortcutsState, homeRowsConfig)
     }
 
-    // Collect toasts
-    LaunchedEffect(Unit) {
-        actionsViewModel.toasts.collect { toast ->
-            toastState.showToast(toast)
-        }
+    // Edit-mode working copy — isolated from external (real-time) updates while editing;
+    // snapshotted fresh on entering edit mode.
+    var items by remember { mutableStateOf(working) }
+    val enabledCount = items.count { it.second }
+    val enabledByKey =
+        remember(items) { items.associate { it.first.category.lazyListKey to it.second } }
+
+    var editMode by state::editMode
+    val displayedData =
+        if (editMode) items.map { it.first } else working.filter { it.second }.map { it.first }
+
+    val reorderableState = rememberReorderableLazyListState(state.lazyListState) { from, to ->
+        // Constrain reorder to the contiguous enabled section.
+        if (from.index >= enabledCount || to.index >= enabledCount) return@rememberReorderableLazyListState
+        items = items.toMutableList().apply { add(to.index, removeAt(from.index)) }
     }
 
-    var showPlayersView by remember { mutableStateOf(false) }
-    var isQueueExpanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = editMode) { editMode = false }
 
-    val recommendationsState = viewModel.recommendationsState.collectAsStateWithLifecycle()
-    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
-    val playersState by viewModel.playersState.collectAsStateWithLifecycle()
-    // Single pager state used across all views
-    val data = playersState as? HomeScreenViewModel.PlayersState.Data
-    val playerPagerState = rememberPagerState(
-        initialPage = data?.selectedPlayerIndex ?: 0,
-        pageCount = { data?.playerData?.size ?: 0 }
-    )
-
-    // Nested navigation backstack - hoisted to survive player view transitions
-    val homeBackStack = rememberHomeNavBackStack()
-
-    // Handle back when player view is shown
-    BackHandler(enabled = showPlayersView) {
-        showPlayersView = false
-    }
-
-    // Bidirectional pager <-> selection sync
-    // Selection→pager runs first (data layer priority), then pager→selection watches user swipes
-    LaunchedEffect(playerPagerState, playersState) {
-        val currentData = playersState as? HomeScreenViewModel.PlayersState.Data
-            ?: return@LaunchedEffect
-        val target = currentData.selectedPlayerIndex ?: return@LaunchedEffect
-        if (playerPagerState.currentPage != target) {
-            playerPagerState.scrollToPage(target)
-        }
-        snapshotFlow { playerPagerState.currentPage }.collect { currentPage ->
-            currentData.playerData.getOrNull(currentPage)?.let { playerData ->
-                viewModel.selectPlayer(playerData.player)
-            }
-        }
-    }
-
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-    ) { paddingValues ->
-        val connectionState = recommendationsState.value.connectionState
-        val dataState = recommendationsState.value.recommendations
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            // Simple slide transition between main screen and big player
-            AnimatedContent(
-                targetState = showPlayersView,
-                transitionSpec = {
-                    slideInVertically(
-                        initialOffsetY = { if (targetState) it else -it },
-                        animationSpec = tween(300)
-                    ) togetherWith slideOutVertically(
-                        targetOffsetY = { if (targetState) -it else it },
-                        animationSpec = tween(300)
-                    )
-                },
-                label = "player_transition"
-            ) { isPlayersViewShown ->
-                if (!isPlayersViewShown) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background)
-                    ) {
-                        HomeContent(
-                            modifier = Modifier.weight(1f),
-                            homeBackStack = homeBackStack,
-                            connectionState = connectionState,
-                            dataState = dataState,
-                            serverUrl = serverUrl,
-                            onPlayClick = viewModel::onPlayClick,
-                            playlistActions = ActionsViewModel.PlaylistActions(
-                                onLoadPlaylists = actionsViewModel::getEditablePlaylists,
-                                onAddToPlaylist = actionsViewModel::addToPlaylist
-                            ),
-                            libraryActions = ActionsViewModel.LibraryActions(
-                                onLibraryClick = actionsViewModel::onLibraryClick,
-                                onFavoriteClick = actionsViewModel::onFavoriteClick
-                            ),
-                            progressActions = ActionsViewModel.ProgressActions(
-                                onMarkPlayed = actionsViewModel::onMarkPlayed,
-                                onMarkUnplayed = actionsViewModel::onMarkUnplayed
-                            ),
-                            navigateTo = navigateTo
-                        ) { modifier, provider ->
-                            actionsViewModel.getProviderIcon(provider)
-                                ?.let { ProviderIcon(modifier, it) }
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .wrapContentHeight()
-                                .defaultMinSize(minHeight = 100.dp)
-                                .clickable { showPlayersView = true }
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            when (val state = playersState) {
-                                is HomeScreenViewModel.PlayersState.Loading -> Text(
-                                    text = "Loading players...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    TopBarLayout(
+        topBar = {
+            LandingPageTopBar(
+                editMode = editMode,
+                onRefresh = { homeScreenViewModel.loadData() },
+                onToggleEditMode = {
+                    if (editMode) {
+                        homeScreenViewModel.saveHomeRows(
+                            items.map {
+                                SettingsRepository.HomeRowPref(
+                                    it.first.category.id,
+                                    it.second,
                                 )
-
-                                is HomeScreenViewModel.PlayersState.Data -> {
-                                    if (state.playerData.isEmpty()) {
-                                        Text(
-                                            text = "No players available",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    } else {
-                                        PlayersPager(
-                                            modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                                            playerPagerState = playerPagerState,
-                                            playersState = state,
-                                            serverUrl = serverUrl,
-                                            simplePlayerAction = { playerId, action ->
-                                                viewModel.playerAction(playerId, action)
-                                            },
-                                            playerAction = { playerData, action ->
-                                                viewModel.playerAction(playerData, action)
-                                            },
-                                            onPlayersRefreshClick = viewModel::refreshPlayers,
-                                            onFavoriteClick = actionsViewModel::onFavoriteClick,
-                                            showQueue = false,
-                                            isQueueExpanded = isQueueExpanded,
-                                            onQueueExpandedSwitch = {
-                                                isQueueExpanded = !isQueueExpanded
-                                            },
-                                            onGoToLibrary = { showPlayersView = false },
-                                            onItemMoved = null,
-                                            queueAction = { action -> viewModel.queueAction(action) },
-                                            settingsAction = viewModel::openPlayerSettings,
-                                            dspSettingsAction = viewModel::openPlayerDspSettings,
-                                        )
-                                    }
-                                }
-
-                                else -> Text(
-                                    text = "No players available",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
+                            },
+                        )
+                        editMode = false
+                    } else {
+                        items = working
+                        editMode = true
                     }
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    ) {
-                        // Close button
-                        IconButton(
-                            onClick = { showPlayersView = false },
-                            modifier = Modifier.fillMaxWidth().height(36.dp)
-                                .align(Alignment.CenterHorizontally)
-                        ) {
-                            Icon(
-                                Icons.Default.ExpandMore,
-                                "Collapse",
-                                modifier = Modifier.size(32.dp)
+                },
+            )
+        },
+        topAppBarState = state.topAppBarState,
+    ) {
+        if (recommendationsState is DataState.Loading) {
+            CenteredProgress()
+        } else if (recommendationsState !is DataState.Data) {
+            CenteredText(
+                text = stringResource(Res.string.library_error),
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            val rowContent: @Composable (HomeRow) -> Unit = { row ->
+                CategoryRow(
+                    data = if (row.loading) DataState.Loading() else DataState.Data(row.category),
+                    itemCategoryProvider = { it },
+                    onNavigateClick = onNavigateClick,
+                    onPlayClick = homeScreenViewModel::onPlayClick,
+                    playlistActions = actionsViewModel,
+                    libraryActions = actionsViewModel,
+                    progressActions = actionsViewModel,
+                    providerIconFetcher = providerIconFetcher,
+                )
+            }
+
+            ProvideClickActions(ClickContext.HOME) {
+                LazyColumn(
+                    modifier = Modifier.testTag(HomeScreenSemantics.LIST_TAG),
+                    state = state.lazyListState,
+                    contentPadding = contentPadding,
+                ) {
+                    // Hidden in edit mode: the reorder callback uses list indices of the rows only.
+                    unsupportedInstallServerId?.takeIf { !editMode }?.let { serverId ->
+                        item(key = UNSUPPORTED_INSTALL_KEY) {
+                            UnsupportedInstallCard(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                onOpenSettings = onOpenSettings,
+                                onDismiss = { homeScreenViewModel.dismissUnsupportedInstall(serverId) },
                             )
                         }
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            when (val state = playersState) {
-                                is HomeScreenViewModel.PlayersState.Loading -> Text(
-                                    text = "Loading players...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-
-                                is HomeScreenViewModel.PlayersState.Data -> {
-                                    if (state.playerData.isEmpty()) {
-                                        Text(
-                                            text = "No players available",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    } else {
-                                        PlayersPager(
-                                            modifier = Modifier.fillMaxSize(),
-                                            playerPagerState = playerPagerState,
-                                            playersState = state,
-                                            serverUrl = serverUrl,
-                                            simplePlayerAction = { playerId, action ->
-                                                viewModel.playerAction(playerId, action)
+                    }
+                    items(
+                        items = displayedData,
+                        key = { it.category.lazyListKey },
+                    ) { homeRow ->
+                        if (editMode) {
+                            val enabled = enabledByKey[homeRow.category.lazyListKey] ?: true
+                            ReorderableItem(reorderableState, key = homeRow.category.lazyListKey) {
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    rowContent(homeRow)
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .background(
+                                                MaterialTheme.colorScheme.background.copy(
+                                                    alpha = if (enabled) 0.60f else 0.80f,
+                                                ),
+                                            )
+                                            .pointerInput(Unit) {
+                                                // Swallow taps & long-presses on the row;
+                                                // vertical drags pass through so the
+                                                // LazyColumn can still scroll.
+                                                detectTapGestures(onTap = {}, onLongPress = {})
                                             },
-                                            playerAction = { playerData, action ->
-                                                viewModel.playerAction(playerData, action)
-                                            },
-                                            onPlayersRefreshClick = viewModel::refreshPlayers,
-                                            onFavoriteClick = actionsViewModel::onFavoriteClick,
-                                            showQueue = true,
-                                            isQueueExpanded = isQueueExpanded,
-                                            onQueueExpandedSwitch = {
-                                                isQueueExpanded = !isQueueExpanded
-                                            },
-                                            onGoToLibrary = { showPlayersView = false },
-                                            onItemMoved = { indexShift ->
-                                                val currentPlayer =
-                                                    state.playerData[playerPagerState.currentPage].player
-                                                val newIndex =
-                                                    (playerPagerState.currentPage + indexShift).coerceIn(
-                                                        0,
-                                                        state.playerData.size - 1
+                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .align(Alignment.CenterEnd)
+                                            .padding(end = 16.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        // Keep at least one row visible: block disabling the last enabled one.
+                                        Switch(
+                                            checked = enabled,
+                                            enabled = !enabled || enabledCount > 1,
+                                            onCheckedChange = { newEnabled ->
+                                                items =
+                                                    moveToEnabledBoundary(
+                                                        items,
+                                                        homeRow,
+                                                        newEnabled,
                                                     )
-                                                val newPlayers =
-                                                    state.playerData.map { it.player.id }
-                                                        .toMutableList()
-                                                        .apply {
-                                                            add(
-                                                                newIndex,
-                                                                removeAt(playerPagerState.currentPage)
-                                                            )
-                                                        }
-                                                viewModel.selectPlayer(currentPlayer)
-                                                viewModel.onPlayersSortChanged(newPlayers)
                                             },
-                                            queueAction = { action -> viewModel.queueAction(action) },
-                                            settingsAction = viewModel::openPlayerSettings,
-                                            dspSettingsAction = viewModel::openPlayerDspSettings,
+                                        )
+                                        Icon(
+                                            modifier = Modifier
+                                                .padding(start = 12.dp)
+                                                .then(
+                                                    if (enabled) Modifier.draggableHandle() else Modifier,
+                                                )
+                                                .alpha(if (enabled) 1f else 0.3f)
+                                                .size(24.dp),
+                                            imageVector = TablerIcons.GripVertical,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
                                         )
                                     }
                                 }
-
-                                else -> Text(
-                                    text = "No players available",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
                             }
+                        } else {
+                            rowContent(homeRow)
                         }
                     }
                 }
@@ -327,139 +246,140 @@ fun HomeScreen(
     }
 }
 
-@Composable
-private fun HomeContent(
-    modifier: Modifier = Modifier,
-    homeBackStack: NavBackStack<*>,
-    connectionState: SessionState,
-    dataState: DataState<List<AppMediaItem.RecommendationFolder>>,
-    serverUrl: String?,
-    onPlayClick: (AppMediaItem, QueueOption, Boolean) -> Unit,
-    playlistActions: ActionsViewModel.PlaylistActions,
-    libraryActions: ActionsViewModel.LibraryActions,
-    progressActions: ActionsViewModel.ProgressActions,
-    navigateTo: (NavScreen) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)
-) {
-    @Suppress("UNCHECKED_CAST")
-    val typedBackStack = homeBackStack as NavBackStack<HomeNavScreen>
+private const val UNSUPPORTED_INSTALL_KEY = "unsupported_install_card"
 
-//    val homeBottomSheetStrategy = remember { BottomSheetSceneStrategy<NavKey>() }
-//    val homeDialogStrategy = remember { DialogSceneStrategy<NavKey>() }
-    val saveableStateHolderForHome = rememberSaveableStateHolder()
+/**
+ * One reconciled home row: its display/reorder identity ([category], valid before
+ * the row's items resolve) plus whether those items are still loading, which
+ * [CategoryRow]'s [DataState] overload renders as a placeholder.
+ */
+internal data class HomeRow(
+    val category: ItemCategory<Nothing>,
+    val loading: Boolean,
+) : IdProvider {
+    override val id: String get() = category.id
+}
 
-    // Handle back when library is open
-    BackHandler(enabled = typedBackStack.last() !is HomeNavScreen.Landing) {
-        typedBackStack.removeLastOrNull()
+// Internal so HomeScreenCategoriesTest can pin the row visibility rules: loading
+// rows stay, resolved-empty rows are hidden.
+internal fun getCategories(
+    recommendationsState: DataState<List<RecommendationRowState>>,
+    shortcutsState: DataState<List<Shortcut>>,
+    homeRowsConfig: List<SettingsRepository.HomeRowPref>,
+): List<Pair<HomeRow, Boolean>> {
+    val baseList = if (recommendationsState is DataState.Data) {
+        val recommendations = recommendationsState.data
+            // A still-loading row stays visible as a placeholder; a resolved row
+            // must contain something the home page can render.
+            .filter { row ->
+                row.items is DataState.Loading ||
+                        row.resolvedItems?.any { it.isHomeRowItem() } == true
+            }
+            .distinctBy { it.folder.lazyListKey() }
+            .map { row ->
+                HomeRow(
+                    category = ItemCategory(
+                        id = row.folder.itemId,
+                        title = row.folder.displayName.toDisplayString(),
+                        items = row.resolvedItems.orEmpty(),
+                        lazyListKey = row.folder.lazyListKey(),
+                        tag = HomeScreenSemantics.rowTag(row.folder.itemId),
+                    ),
+                    loading = row.items is DataState.Loading,
+                )
+            }
+
+        if (shortcutsState is DataState.Data && shortcutsState.data.isNotEmpty()) {
+            val shortcuts = shortcutsState.data
+            val shortcutsRow = HomeRow(
+                category = ItemCategory(
+                    id = SHORTCUTS_CATEGORY_ID,
+                    title = Res.string.discover_shortcuts.toDisplayString(),
+                    items = shortcuts.map { it.item },
+                    lazyListKey = SHORTCUTS_CATEGORY_ID,
+                    tag = HomeScreenSemantics.SHORTCUTS_ROW_TAG,
+                ),
+                loading = false,
+            )
+
+            recommendations + shortcutsRow
+        } else {
+            recommendations
+        }
+    } else {
+        emptyList()
     }
 
-    NavDisplay(
-        modifier = modifier,
-        backStack = typedBackStack,
-        onBack = { typedBackStack.removeLastOrNull() },
-        entryDecorators = listOf(
-            rememberSaveableStateHolderNavEntryDecorator(saveableStateHolderForHome)
-        ),
-        entryProvider = entryProvider {
-            entry<HomeNavScreen.Landing> {
-                LandingPage(
-                    modifier = Modifier.fillMaxSize(),
-                    connectionState = connectionState,
-                    dataState = dataState,
-                    serverUrl = serverUrl,
-                    onNavigateClick = { item ->
-                        when (item) {
-                            is AppMediaItem.Artist,
-                            is AppMediaItem.Album,
-                            is AppMediaItem.Playlist,
-                            is AppMediaItem.Podcast,
-                            is AppMediaItem.Audiobook -> {
-                                typedBackStack.add(
-                                    HomeNavScreen.ItemDetails(
-                                        itemId = item.itemId,
-                                        mediaType = item.mediaType,
-                                        providerId = item.provider
-                                    )
-                                )
-                            }
+    return reconcileHomeRows(baseList, homeRowsConfig, onTop = SHORTCUTS_CATEGORY_ID)
+}
 
-                            else -> Unit
-                        }
-                    },
-                    onPlayClick = onPlayClick,
-                    onLibraryItemClick = { type ->
-                        if (type == null) {
-                            typedBackStack.add(HomeNavScreen.Search)
-                        } else {
-                            typedBackStack.add(HomeNavScreen.Library(type))
-                        }
-                    },
-                    playlistActions = playlistActions,
-                    libraryActions = libraryActions,
-                    progressActions = progressActions,
-                    navigateTo = navigateTo,
-                    providerIconFetcher = providerIconFetcher
+private const val SHORTCUTS_CATEGORY_ID = "shortcuts"
+
+@Composable
+private fun LandingPageTopBar(
+    editMode: Boolean,
+    onRefresh: () -> Unit,
+    onToggleEditMode: () -> Unit,
+) {
+    TopAppBar(
+        title = {
+            Text(
+                stringResource(Res.string.nav_discover),
+                modifier = Modifier.testTag(ScreenSemantics.TITLE_TAG),
+            )
+        },
+        actions = {
+            IconButton(onClick = onToggleEditMode) {
+                Icon(
+                    imageVector = if (editMode) Icons.Default.Done else Icons.Default.Edit,
+                    contentDescription = stringResource(
+                        if (editMode) Res.string.discover_save_rows else Res.string.discover_edit_rows,
+                    ),
                 )
             }
 
-            entry<HomeNavScreen.Library> {
-                LibraryScreen(
-                    initialTabType = it.type,
-                    onBack = { typedBackStack.removeLastOrNull() },
-                    onNavigateClick = { item ->
-                        when (item) {
-                            is AppMediaItem.Artist,
-                            is AppMediaItem.Album,
-                            is AppMediaItem.Playlist,
-                            is AppMediaItem.Podcast,
-                            is AppMediaItem.Audiobook -> {
-                                typedBackStack.add(
-                                    HomeNavScreen.ItemDetails(
-                                        itemId = item.itemId,
-                                        mediaType = item.mediaType,
-                                        providerId = item.provider
-                                    )
-                                )
-                            }
-
-                            else -> Unit
-                        }
-                    }
-                )
+            if (!editMode) {
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = stringResource(Res.string.refresh),
+                    )
+                }
             }
+        },
+    )
+}
 
-            entry<HomeNavScreen.ItemDetails> {
-                ItemDetailsScreen(
-                    itemId = it.itemId,
-                    mediaType = it.mediaType,
-                    providerId = it.providerId,
-                    onBack = { typedBackStack.removeLastOrNull() },
-                    onNavigateToItem = { itemId, mediaType, providerId ->
-                        typedBackStack.add(
-                            HomeNavScreen.ItemDetails(
-                                itemId = itemId,
-                                mediaType = mediaType,
-                                providerId = providerId
-                            )
-                        )
-                    }
-                )
-            }
+class HomeScreenState(
+    val topAppBarState: TopAppBarState,
+    val lazyListState: LazyListState,
+    val coroutineScope: CoroutineScope,
+) : ScreenState {
+    /** Read by the navigation root, which hides the floating player bar while editing. */
+    var editMode by mutableStateOf(false)
 
-            entry<HomeNavScreen.Search> {
-                SearchScreen(
-                    onBack = { typedBackStack.removeLastOrNull() },
-                    onNavigateToItem = { itemId, mediaType, providerId ->
-                        typedBackStack.add(
-                            HomeNavScreen.ItemDetails(
-                                itemId = itemId,
-                                mediaType = mediaType,
-                                providerId = providerId
-                            )
-                        )
-                    }
-                )
+    override fun reset() {
+        coroutineScope.launch {
+            topAppBarState.heightOffset = 0f
+            lazyListState.animateScrollToItem(0)
+        }
+    }
+
+    companion object {
+        @Composable
+        fun create(): HomeScreenState {
+            val topAppBarState = rememberTopAppBarState()
+            val lazyListState = rememberLazyListState()
+            val coroutineScope = rememberCoroutineScope()
+            return remember(topAppBarState, lazyListState, coroutineScope) {
+                HomeScreenState(topAppBarState, lazyListState, coroutineScope)
             }
         }
-    )
+    }
+}
+
+object HomeScreenSemantics {
+    fun rowTag(categoryId: String): String = "Row:$categoryId"
+    const val SHORTCUTS_ROW_TAG = "ShortcutsRow"
+    const val LIST_TAG = "List"
 }

@@ -5,64 +5,102 @@ package io.music_assistant.client.ui.compose.search
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarState
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.capitalize
-import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.server.MediaType
-import io.music_assistant.client.data.model.server.QueueOption
+import io.music_assistant.client.data.model.client.ClickContext
+import io.music_assistant.client.data.model.client.MediaType
+import io.music_assistant.client.data.model.client.items.Album
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.Artist
+import io.music_assistant.client.data.model.client.items.Audiobook
+import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.Playlist
+import io.music_assistant.client.data.model.client.items.Podcast
+import io.music_assistant.client.data.model.client.items.RadioStation
+import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.model.client.stringResource
+import io.music_assistant.client.nav.ScreenState
+import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.DataState
+import io.music_assistant.client.ui.compose.common.MultiSelectDialog
+import io.music_assistant.client.ui.compose.common.SelectOption
+import io.music_assistant.client.ui.compose.common.SettingsSheet
 import io.music_assistant.client.ui.compose.common.ToastHost
 import io.music_assistant.client.ui.compose.common.ToastState
+import io.music_assistant.client.ui.compose.common.clearFocusOnScroll
 import io.music_assistant.client.ui.compose.common.items.AlbumWithMenu
 import io.music_assistant.client.ui.compose.common.items.ArtistWithMenu
 import io.music_assistant.client.ui.compose.common.items.AudiobookWithMenu
+import io.music_assistant.client.ui.compose.common.items.CategoryRow
+import io.music_assistant.client.ui.compose.common.items.GenreWithMenu
+import io.music_assistant.client.ui.compose.common.items.LibraryActions
+import io.music_assistant.client.ui.compose.common.items.PlayHandler
+import io.music_assistant.client.ui.compose.common.items.PlaylistActions
 import io.music_assistant.client.ui.compose.common.items.PlaylistWithMenu
 import io.music_assistant.client.ui.compose.common.items.PodcastWithMenu
+import io.music_assistant.client.ui.compose.common.items.ProgressActions
+import io.music_assistant.client.ui.compose.common.items.ProvideClickActions
 import io.music_assistant.client.ui.compose.common.items.RadioWithMenu
 import io.music_assistant.client.ui.compose.common.items.TrackWithMenu
-import io.music_assistant.client.ui.compose.common.providers.ProviderIcon
+import io.music_assistant.client.ui.compose.common.items.lazyListOccurrenceKeys
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import io.music_assistant.client.ui.compose.common.providers.providerIconFetcher
 import io.music_assistant.client.ui.compose.common.rememberToastState
 import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
-import org.koin.compose.viewmodel.koinViewModel
+import io.music_assistant.client.ui.compose.library.FilterAction
+import io.music_assistant.client.ui.compose.nav.TopBarLayout
+import io.music_assistant.client.ui.compose.provider.ProviderViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.filter_sources
+import musicassistantclient.composeapp.generated.resources.genre_filter_media_type
+import musicassistantclient.composeapp.generated.resources.search_error
+import musicassistantclient.composeapp.generated.resources.search_in_library_only
+import musicassistantclient.composeapp.generated.resources.search_no_results
+import musicassistantclient.composeapp.generated.resources.search_query_label
+import musicassistantclient.composeapp.generated.resources.search_source_library
+import org.jetbrains.compose.resources.stringResource
 
 @Composable
 fun SearchScreen(
-    onBack: () -> Unit,
+    searchViewModel: SearchViewModel,
     onNavigateToItem: (String, MediaType, String) -> Unit,
-    viewModel: SearchViewModel = koinViewModel(),
-    actionsViewModel: ActionsViewModel = koinViewModel()
+    actionsViewModel: ActionsViewModel,
+    providerViewModel: ProviderViewModel,
+    contentPadding: PaddingValues,
+    state: SearchScreenState,
+    pendingSearch: GlobalSearchRequest? = null,
+    onSearchConsumed: () -> Unit = {},
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle(null)
+    val searchState by searchViewModel.state.collectAsStateWithLifecycle()
+    val recentSearches by searchViewModel.recentSearches.collectAsStateWithLifecycle()
     val toastState = rememberToastState()
 
     LaunchedEffect(Unit) {
@@ -71,111 +109,194 @@ fun SearchScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        SearchTopBar(
-            onBack = onBack,
-        )
-
-        SearchContent(
-            state = state,
-            serverUrl = serverUrl,
-            toastState = toastState,
-            onQueryChanged = viewModel::onQueryChanged,
-            onMediaTypeToggled = viewModel::onMediaTypeToggled,
-            onLibraryOnlyToggled = viewModel::onLibraryOnlyToggled,
-            onItemClick = { item ->
-                when (item) {
-                    is AppMediaItem.Artist,
-                    is AppMediaItem.Album,
-                    is AppMediaItem.Playlist,
-                    is AppMediaItem.Podcast,
-                    is AppMediaItem.Audiobook -> {
-                        onNavigateToItem(item.itemId, item.mediaType, item.provider)
-                    }
-
-                    else -> Unit
-                }
-            },
-            onPlayClick = viewModel::onPlayClick,
-            playlistActions = ActionsViewModel.PlaylistActions(
-                onLoadPlaylists = actionsViewModel::getEditablePlaylists,
-                onAddToPlaylist = actionsViewModel::addToPlaylist
-            ),
-            libraryActions = ActionsViewModel.LibraryActions(
-                onLibraryClick = actionsViewModel::onLibraryClick,
-                onFavoriteClick = actionsViewModel::onFavoriteClick
-            ),
-            progressActions = ActionsViewModel.ProgressActions(
-                onMarkPlayed = actionsViewModel::onMarkPlayed,
-                onMarkUnplayed = actionsViewModel::onMarkUnplayed
-            ),
-            providerIconFetcher = { modifier, provider ->
-                actionsViewModel.getProviderIcon(provider)
-                    ?.let { ProviderIcon(modifier, it) }
-            }
-        )
+    // Escalation from an empty in-library quick search (state hoisted in MainNavigationRoot,
+    // which outlives the per-NavEntry SearchViewModel). Apply once, then clear.
+    LaunchedEffect(pendingSearch) {
+        pendingSearch?.let {
+            searchViewModel.applyGlobalSearch(it)
+            onSearchConsumed()
+        }
     }
-}
 
-@Composable
-private fun SearchTopBar(
-    onBack: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 2.dp
+    TopBarLayout(
+        topBar = {
+            SearchTopBar(
+                searchState.searchState,
+                onQueryChanged = searchViewModel::onQueryChanged,
+                onSearch = searchViewModel::onSearch,
+                onFiltersChanged = searchViewModel::onFiltersChanged,
+            )
+        },
+        topAppBarState = state.topAppBarState,
     ) {
-        Row(
-            modifier = Modifier.height(64.dp).fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start)
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-            }
-            Text(
-                text = "Global search",
-                style = MaterialTheme.typography.titleLarge
+        ProvideClickActions(ClickContext.SEARCH) {
+            SearchContent(
+                state = searchState,
+                recentSearches = recentSearches,
+                onRecentSearchClick = searchViewModel::onRecentSearchClick,
+                toastState = toastState,
+                onItemClick = { item ->
+                    searchViewModel.onResultOpened()
+                    when (item) {
+                        is Artist,
+                        is Album,
+                        is Playlist,
+                        is Podcast,
+                        is Audiobook,
+                        is Genre,
+                        is Track,
+                            -> {
+                            onNavigateToItem(item.itemId, item.mediaType, item.provider)
+                        }
+
+                        else -> Unit
+                    }
+                },
+                onPlayClick = searchViewModel::onPlayClick,
+                playlistActions = actionsViewModel,
+                libraryActions = actionsViewModel,
+                progressActions = actionsViewModel,
+                providerIconFetcher = providerViewModel.providerIconFetcher(),
+                contentPadding = contentPadding,
+                lazyListState = state.lazyListState,
             )
         }
     }
 }
 
 @Composable
+private fun SearchTopBar(
+    searchState: SearchViewModel.SearchState,
+    onQueryChanged: (String) -> Unit,
+    onSearch: () -> Unit,
+    onFiltersChanged: (List<MediaType>, Boolean, List<String>?) -> Unit,
+) {
+    TopAppBar(
+        title = {
+            SearchInput(
+                query = searchState.query,
+                onQueryChanged = onQueryChanged,
+                onSearchAction = onSearch,
+                placeholder = stringResource(Res.string.search_query_label),
+            )
+        },
+        actions = {
+            SearchFilterAction(
+                searchState.mediaTypes.map { it.type },
+                searchState.selectedMediaTypes,
+                searchState.libraryOnly,
+                searchState.sources,
+                onFiltersChanged,
+            )
+        },
+    )
+}
+
+/** On a server with [SearchSources], the source picker replaces the "In library only" switch. */
+@Composable
+private fun SearchFilterAction(
+    mediaTypes: List<MediaType>,
+    selectedMediaTypes: List<MediaType>,
+    libraryOnly: Boolean,
+    sources: SearchSources?,
+    onFiltersChanged: (List<MediaType>, Boolean, List<String>?) -> Unit,
+) {
+    FilterAction(
+        state = { SearchFilterState(selectedMediaTypes, libraryOnly, sources?.selected) },
+        active = selectedMediaTypes.isNotEmpty() || libraryOnly || !sources?.selected.isNullOrEmpty(),
+        onApply = { onFiltersChanged(it.selectedMediaTypes, it.libraryOnly.value, it.sources?.toList()) },
+        canReset = { it.hasActive },
+        onReset = { it.reset() },
+    ) { state ->
+        val workingSelectedMediaTypes = state.selectedMediaTypes
+        var workingLibraryOnly by state.libraryOnly
+        var pickingSources by remember { mutableStateOf(false) }
+
+        SettingsSheet.MultiChoiceChipsRow(
+            label = Res.string.genre_filter_media_type,
+            options = mediaTypes,
+            selected = workingSelectedMediaTypes.toList(),
+            optionLabel = { it.stringResource() },
+            onToggle = {
+                if (workingSelectedMediaTypes.contains(it)) {
+                    workingSelectedMediaTypes.remove(it)
+                } else {
+                    workingSelectedMediaTypes.add(it)
+                }
+            },
+        )
+
+        sources?.let { offered ->
+            val workingSources = state.sources ?: return@let
+            SettingsSheet.PickerRow(Res.string.filter_sources, workingSources.size) { pickingSources = true }
+            if (pickingSources) {
+                val library = SelectOption(SearchSources.LIBRARY, stringResource(Res.string.search_source_library))
+                MultiSelectDialog(
+                    title = Res.string.filter_sources,
+                    optionsState = offered.providers
+                        ?.let { DataState.Data(listOf(library) + it) }
+                        ?: DataState.Loading(),
+                    selected = workingSources.toSet(),
+                    onConfirm = {
+                        workingSources.clear()
+                        workingSources.addAll(it)
+                        pickingSources = false
+                    },
+                    onDismiss = { pickingSources = false },
+                )
+            }
+        } ?: SettingsSheet.SwitchRow(
+            label = Res.string.search_in_library_only,
+            checked = workingLibraryOnly,
+            onChange = { workingLibraryOnly = it },
+        )
+    }
+}
+
+private class SearchFilterState(
+    selectedMediaTypes: List<MediaType>,
+    libraryOnly: Boolean,
+    sources: List<String>?,
+) {
+    val selectedMediaTypes = selectedMediaTypes.toMutableStateList()
+    val libraryOnly = mutableStateOf(libraryOnly)
+
+    // Null on a server without the source choice.
+    val sources = sources?.toMutableStateList()
+
+    val hasActive: Boolean
+        get() = selectedMediaTypes.isNotEmpty() || libraryOnly.value || !sources.isNullOrEmpty()
+
+    fun reset() {
+        selectedMediaTypes.clear()
+        libraryOnly.value = false
+        sources?.clear()
+    }
+}
+
+@Composable
 private fun SearchContent(
     state: SearchViewModel.State,
-    serverUrl: String?,
+    recentSearches: List<String>,
+    onRecentSearchClick: (String) -> Unit,
     toastState: ToastState,
-    onQueryChanged: (String) -> Unit,
-    onMediaTypeToggled: (MediaType, Boolean) -> Unit,
-    onLibraryOnlyToggled: (Boolean) -> Unit,
     onItemClick: (AppMediaItem) -> Unit,
-    onPlayClick: (AppMediaItem, QueueOption, Boolean) -> Unit,
-    playlistActions: ActionsViewModel.PlaylistActions,
-    libraryActions: ActionsViewModel.LibraryActions,
-    progressActions: ActionsViewModel.ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit),
+    onPlayClick: PlayHandler<AppMediaItem>,
+    playlistActions: PlaylistActions,
+    libraryActions: LibraryActions,
+    progressActions: ProgressActions? = null,
+    providerIconFetcher: ProviderIconFetcher,
+    contentPadding: PaddingValues,
+    lazyListState: LazyListState,
 ) {
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            SearchInput(state.searchState.query, onQueryChanged)
-
-            // Search filters (always visible)
-            SearchFilters(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                searchState = state.searchState,
-                onMediaTypeToggled = onMediaTypeToggled,
-                onLibraryOnlyToggled = onLibraryOnlyToggled
-            )
-
             // Results
             when (val resultsState = state.resultsState) {
                 is DataState.Loading -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                        contentAlignment = Alignment.Center,
                     ) {
                         CircularProgressIndicator()
                     }
@@ -184,182 +305,173 @@ private fun SearchContent(
                 is DataState.Error -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                        contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = "Error loading search results",
-                            color = MaterialTheme.colorScheme.error
+                            text = stringResource(Res.string.search_error),
+                            color = MaterialTheme.colorScheme.error,
                         )
                     }
                 }
 
                 is DataState.Stale,
-                is DataState.Data -> {
+                is DataState.Data,
+                    -> {
                     // Handle both Data and Stale - both contain valid search results
                     val results = when (resultsState) {
-                        is DataState.Data -> resultsState.data
                         is DataState.Stale -> resultsState.data
-                        else -> return@Column
+                        is DataState.Data -> resultsState.data
                     }
-                    val hasResults = results.artists.isNotEmpty() ||
-                            results.albums.isNotEmpty() ||
-                            results.tracks.isNotEmpty() ||
-                            results.playlists.isNotEmpty() ||
-                            results.audiobooks.isNotEmpty() ||
-                            results.podcasts.isNotEmpty() ||
-                            results.radios.isNotEmpty()
-
-                    if (!hasResults) {
-                        Box(
+                    when (results.nonEmptyLists.size) {
+                        0 -> Box(
                             modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Text("No results found")
+                            Text(stringResource(Res.string.search_no_results))
                         }
-                    } else {
-                        LazyVerticalGrid(
-                            modifier = Modifier.fillMaxSize(),
-                            columns = GridCells.Adaptive(minSize = 96.dp),
-                            contentPadding = PaddingValues(8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+
+                        1 -> LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                                .clearFocusOnScroll(),
+                            state = lazyListState,
+                            contentPadding = contentPadding,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            // Tracks section
-                            if (results.tracks.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Tracks")
-                                }
-                                items(results.tracks) { track ->
-                                    TrackWithMenu(
-                                        item = track,
-                                        serverUrl = serverUrl,
+                            val (title, items) = results.nonEmptyLists.first()
+                            item {
+                                Text(
+                                    text = stringResource(title),
+                                    style = MaterialTheme.typography.titleLarge,
+                                )
+                            }
+                            item {
+                                Spacer(modifier = Modifier.height(16.dp))
+                            }
+                            val itemKeys = items.lazyListOccurrenceKeys()
+                            itemsIndexed(
+                                items = items,
+                                key = { index, _ -> itemKeys[index] },
+                            ) { _, item ->
+                                when (item) {
+                                    is Track -> TrackWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        navigateToItem = onItemClick,
+                                        onPlayOption = onPlayClick,
+                                        libraryActions = libraryActions,
+                                        providerIconFetcher = providerIconFetcher,
+                                    )
+
+                                    is Artist -> ArtistWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onNavigateClick = onItemClick,
+                                        onPlayOption = onPlayClick,
+                                        libraryActions = libraryActions,
+                                        providerIconFetcher = providerIconFetcher,
+                                    )
+
+                                    is Album -> AlbumWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onNavigateClick = onItemClick,
+                                        navigateToItem = onItemClick,
                                         onPlayOption = onPlayClick,
                                         playlistActions = playlistActions,
                                         libraryActions = libraryActions,
                                         providerIconFetcher = providerIconFetcher,
                                     )
-                                }
-                            }
 
-                            // Artists section
-                            if (results.artists.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Artists")
-                                }
-                                items(results.artists) { artist ->
-                                    ArtistWithMenu(
-                                        item = artist,
-                                        showSubtitle = true,
-                                        serverUrl = serverUrl,
+                                    is Playlist -> PlaylistWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
                                         onNavigateClick = onItemClick,
                                         onPlayOption = onPlayClick,
                                         libraryActions = libraryActions,
-                                        providerIconFetcher = providerIconFetcher
-                                    )
-                                }
-                            }
-
-                            // Albums section
-                            if (results.albums.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Albums")
-                                }
-                                items(results.albums) { album ->
-                                    AlbumWithMenu(
-                                        item = album,
-                                        showSubtitle = true,
-                                        serverUrl = serverUrl,
-                                        onNavigateClick = onItemClick,
-                                        onPlayOption = onPlayClick,
-                                        libraryActions = libraryActions,
-                                        providerIconFetcher = providerIconFetcher
-                                    )
-                                }
-                            }
-
-                            // Playlists section
-                            if (results.playlists.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Playlists")
-                                }
-                                items(results.playlists) { playlist ->
-                                    PlaylistWithMenu(
-                                        item = playlist,
-                                        showSubtitle = true,
-                                        serverUrl = serverUrl,
-                                        onNavigateClick = onItemClick,
-                                        onPlayOption = onPlayClick,
-                                        libraryActions = libraryActions,
-                                        providerIconFetcher = providerIconFetcher
-                                    )
-                                }
-                            }
-
-                            // Podcasts section
-                            if (results.podcasts.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Podcasts")
-                                }
-                                items(results.podcasts) { podcast ->
-                                    PodcastWithMenu(
-                                        item = podcast,
-                                        showSubtitle = true,
-                                        serverUrl = serverUrl,
-                                        onNavigateClick = onItemClick,
-                                        onPlayOption = onPlayClick,
-                                        libraryActions = libraryActions,
-                                        providerIconFetcher = providerIconFetcher
-                                    )
-                                }
-                            }
-
-                            // Audiobooks section
-                            if (results.audiobooks.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Audiobooks")
-                                }
-                                items(results.audiobooks) { audiobook ->
-                                    AudiobookWithMenu(
-                                        item = audiobook,
-                                        showSubtitle = true,
-                                        serverUrl = serverUrl,
-                                        onNavigateClick = onItemClick,
-                                        onPlayOption = onPlayClick,
-                                        libraryActions = libraryActions,
-                                        progressActions = progressActions,
                                         providerIconFetcher = providerIconFetcher,
                                     )
-                                }
-                            }
 
-                            // Radio section
-                            if (results.radios.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader("Radio")
-                                }
-                                items(results.radios) { radio ->
-                                    RadioWithMenu(
-                                        item = radio,
-                                        serverUrl = serverUrl,
+                                    is Podcast -> PodcastWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onNavigateClick = onItemClick,
+                                        onPlayOption = onPlayClick,
+                                        libraryActions = libraryActions,
+                                        providerIconFetcher = providerIconFetcher,
+                                    )
+
+                                    is Audiobook -> AudiobookWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onNavigateClick = onItemClick,
                                         onPlayOption = onPlayClick,
                                         playlistActions = playlistActions,
                                         libraryActions = libraryActions,
                                         providerIconFetcher = providerIconFetcher,
                                     )
+
+                                    is RadioStation -> RadioWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onPlayOption = onPlayClick,
+                                        libraryActions = libraryActions,
+                                        providerIconFetcher = providerIconFetcher,
+                                    )
+
+                                    is Genre -> GenreWithMenu(
+                                        viewMode = ViewMode.LIST,
+                                        item = item,
+                                        onNavigateClick = onItemClick,
+                                        onPlayOption = onPlayClick,
+                                        libraryActions = libraryActions,
+                                        providerIconFetcher = providerIconFetcher,
+                                    )
+
+                                    else -> Unit
+                                }
+                            }
+                        }
+
+                        else -> {
+                            val preparedItems = results.nonEmptyLists
+                                .map { (title, items) -> Pair(stringResource(title), items) }
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clearFocusOnScroll(),
+                                state = lazyListState,
+                                contentPadding = contentPadding,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                preparedItems.forEach { (stringTitle, items) ->
+                                    if (items.isNotEmpty()) {
+                                        item(key = stringTitle, contentType = "category") {
+                                            CategoryRow(
+                                                title = stringTitle,
+                                                onNavigateClick = onItemClick,
+                                                onPlayClick = onPlayClick,
+                                                mediaItems = items,
+                                                playlistActions = playlistActions,
+                                                libraryActions = libraryActions,
+                                                progressActions = progressActions,
+                                                providerIconFetcher = providerIconFetcher,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                is DataState.NoData -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("Start searching...")
-                    }
-                }
+                is DataState.NoData -> RecentSearches(
+                    recentSearches = recentSearches,
+                    query = state.searchState.query,
+                    onClick = onRecentSearchClick,
+                    contentPadding = contentPadding,
+                )
             }
         }
 
@@ -368,58 +480,32 @@ private fun SearchContent(
             toastState = toastState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = 48.dp)
+                .padding(bottom = 48.dp),
         )
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SearchFilters(
-    modifier: Modifier = Modifier,
-    searchState: SearchViewModel.SearchState,
-    onMediaTypeToggled: (MediaType, Boolean) -> Unit,
-    onLibraryOnlyToggled: (Boolean) -> Unit,
-) {
-    FlowRow(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Media type filter chips
-        searchState.mediaTypes.forEach { mediaTypeSelect ->
-            FilterChip(
-                selected = mediaTypeSelect.isSelected,
-                onClick = {
-                    onMediaTypeToggled(
-                        mediaTypeSelect.type,
-                        !mediaTypeSelect.isSelected
-                    )
-                },
-                label = {
-                    Text(
-                        text = mediaTypeSelect.type.name.lowercase().capitalize(Locale.current),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            )
+class SearchScreenState(
+    val topAppBarState: TopAppBarState,
+    val lazyListState: LazyListState,
+    val coroutineScope: CoroutineScope,
+) : ScreenState {
+    override fun reset() {
+        topAppBarState.heightOffset = 0f
+        coroutineScope.launch {
+            lazyListState.animateScrollToItem(0)
         }
-
-        // In library only filter chip
-        FilterChip(
-            selected = searchState.libraryOnly,
-            onClick = { onLibraryOnlyToggled(!searchState.libraryOnly) },
-            label = {
-                Text(text = "In library only", style = MaterialTheme.typography.bodySmall)
-            }
-        )
     }
-}
 
-@Composable
-private fun SectionHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(16.dp, 8.dp)
-    )
+    companion object {
+        @Composable
+        fun create(): SearchScreenState {
+            val topAppBarState = rememberTopAppBarState()
+            val lazyListState = rememberLazyListState()
+            val coroutineScope = rememberCoroutineScope()
+            return remember(topAppBarState, lazyListState, coroutineScope) {
+                SearchScreenState(topAppBarState, lazyListState, coroutineScope)
+            }
+        }
+    }
 }

@@ -8,6 +8,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.music_assistant.client.webrtc.model.SignalingMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -22,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlin.concurrent.Volatile
 
 /**
  * WebSocket state for signaling server connection.
@@ -60,12 +62,13 @@ sealed class SignalingState {
 class SignalingClient(
     private val client: HttpClient,
     private val scope: CoroutineScope,
-    private val signalingUrl: String = DEFAULT_SIGNALING_URL
+    private val signalingUrl: String = DEFAULT_SIGNALING_URL,
+    val diagnostics: WebRTCDiagnostics = WebRTCDiagnostics(),
 ) {
-
     private val logger = Logger.withTag("SignalingClient")
     private val mutex = Mutex()
 
+    @Volatile
     private var session: io.ktor.client.plugins.websocket.DefaultClientWebSocketSession? = null
     private var receiveJob: Job? = null
 
@@ -88,20 +91,27 @@ class SignalingClient(
             return@withLock
         }
 
-        logger.i { "Connecting to signaling server: $signalingUrl" }
+        diagnostics.event("signaling open started")
         _connectionState.value = SignalingState.Connecting
 
         try {
             val wsSession = client.webSocketSession(signalingUrl)
             session = wsSession
             _connectionState.value = SignalingState.Connected
-            logger.i { "Connected to signaling server" }
+            diagnostics.event("signaling open completed")
+            // Observe completion only: never await closeReason or extend cleanup lifetime.
+            wsSession.closeReason.invokeOnCompletion { error ->
+                if (error != null) {
+                    diagnostics.failure("signaling close metadata unavailable", error)
+                } else {
+                    logCloseReason(wsSession.closeReason)
+                }
+            }
 
             // Start listening for incoming messages
             startReceiving()
-
         } catch (e: Exception) {
-            logger.e(e) { "Failed to connect to signaling server" }
+            diagnostics.failure("signaling open failed", e)
             _connectionState.value = SignalingState.Error(e)
             session = null
         }
@@ -116,7 +126,7 @@ class SignalingClient(
         val currentSession = session
         if (currentSession == null) {
             logger.e { "Cannot send message: not connected to signaling server" }
-            throw IllegalStateException("Not connected to signaling server")
+            error("Not connected to signaling server")
         }
 
         try {
@@ -125,59 +135,58 @@ class SignalingClient(
             val json = when (message) {
                 is SignalingMessage.ConnectRequest -> signalingJson.encodeToString(
                     SignalingMessage.ConnectRequest.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Connected -> signalingJson.encodeToString(
                     SignalingMessage.Connected.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Offer -> signalingJson.encodeToString(
                     SignalingMessage.Offer.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Answer -> signalingJson.encodeToString(
                     SignalingMessage.Answer.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.IceCandidate -> signalingJson.encodeToString(
                     SignalingMessage.IceCandidate.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Error -> signalingJson.encodeToString(
                     SignalingMessage.Error.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.PeerDisconnected -> signalingJson.encodeToString(
                     SignalingMessage.PeerDisconnected.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Ping -> signalingJson.encodeToString(
                     SignalingMessage.Ping.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Pong -> signalingJson.encodeToString(
                     SignalingMessage.Pong.serializer(),
-                    message
+                    message,
                 )
 
                 is SignalingMessage.Unknown -> signalingJson.encodeToString(
                     SignalingMessage.Unknown.serializer(),
-                    message
+                    message,
                 )
             }
             logger.d { "Sending signaling message: ${message.type}" }
-            logger.d { "JSON payload: $json" }
             currentSession.send(Frame.Text(json))
         } catch (e: Exception) {
-            logger.e(e) { "Failed to send signaling message" }
+            diagnostics.failure("signaling send failed", e)
             throw e
         }
     }
@@ -187,7 +196,7 @@ class SignalingClient(
      * Thread-safe: protected by mutex.
      */
     suspend fun disconnect() = mutex.withLock {
-        logger.i { "Disconnecting from signaling server" }
+        diagnostics.event("signaling local disconnect requested")
 
         try {
             receiveJob?.cancelAndJoin()
@@ -198,6 +207,8 @@ class SignalingClient(
 
             _connectionState.value = SignalingState.Disconnected
             logger.i { "Disconnected from signaling server" }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.e(e) { "Error during disconnect" }
         }
@@ -239,11 +250,13 @@ class SignalingClient(
                     }
                 }
             } catch (e: Exception) {
+                diagnostics.failure("signaling receive ended active=$isActive", e)
                 if (isActive) {
-                    logger.e(e) { "Error receiving signaling messages" }
                     _connectionState.value = SignalingState.Error(e)
                 }
             } finally {
+                val closeMetadataReady = currentSession.closeReason.isCompleted
+                diagnostics.event("signaling receive terminated active=$isActive closeMetadataReady=$closeMetadataReady")
                 session = null
                 if (_connectionState.value is SignalingState.Connected) {
                     _connectionState.value = SignalingState.Disconnected
@@ -258,10 +271,14 @@ class SignalingClient(
     private suspend fun handleTextFrame(frame: Frame.Text) {
         try {
             val text = frame.readText()
-            logger.d { "Received signaling message: ${text.take(100)}..." }
-
             val message = signalingJson.decodeFromString(SignalingMessageSerializer, text)
-            logger.d { "Parsed signaling message type: ${message.type}" }
+            // Keepalives stay at Debug: at Info they would flood the shared crash-report
+            // ring buffer (InMemoryLogWriter) on long-lived connections.
+            when (message) {
+                is SignalingMessage.Ping, is SignalingMessage.Pong ->
+                    logger.d { "Signaling keepalive: ${message.type}" }
+                else -> diagnostics.event("signaling message received type=${message::class.simpleName}")
+            }
 
             // Handle ping at transport level — respond immediately, don't emit to consumers
             if (message is SignalingMessage.Ping) {
@@ -272,8 +289,13 @@ class SignalingClient(
 
             _incomingMessages.emit(message)
         } catch (e: Exception) {
-            logger.e(e) { "Failed to parse signaling message" }
+            diagnostics.failure("signaling parse/dispatch failed", e)
         }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun logCloseReason(reason: kotlinx.coroutines.Deferred<CloseReason?>) {
+        diagnostics.event("signaling closed ${safeCloseSummary(reason.getCompleted())}")
     }
 
     companion object {

@@ -3,61 +3,178 @@ package io.music_assistant.client.ui.compose.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import co.touchlab.kermit.Logger
+import io.music_assistant.client.api.APICommands
 import io.music_assistant.client.api.Request
 import io.music_assistant.client.api.ServiceClient
 import io.music_assistant.client.data.MainDataSource
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.client.AppMediaItem.Companion.toAppMediaItem
-import io.music_assistant.client.data.model.client.AppMediaItem.Companion.toAppMediaItemList
 import io.music_assistant.client.data.model.client.Player
 import io.music_assistant.client.data.model.client.PlayerData
-import io.music_assistant.client.data.model.server.QueueOption
-import io.music_assistant.client.data.model.server.ServerMediaItem
-import io.music_assistant.client.data.model.server.events.MediaItemAddedEvent
-import io.music_assistant.client.data.model.server.events.MediaItemDeletedEvent
-import io.music_assistant.client.data.model.server.events.MediaItemUpdatedEvent
-import io.music_assistant.client.player.sendspin.SendspinState
+import io.music_assistant.client.data.model.client.Shortcut
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.RecommendationFolder
+import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.model.server.ServerUser
+import io.music_assistant.client.data.model.server.events.PlaylogUpdatedEvent
+import io.music_assistant.client.data.model.server.supportsLeaderLeave
+import io.music_assistant.client.data.model.server.supportsSleepTimer
+import io.music_assistant.client.data.play.PlayDispatcher
+import io.music_assistant.client.data.play.PlayMode
+import io.music_assistant.client.data.play.PlayRequest
+import io.music_assistant.client.data.repository.MediaItemChange
+import io.music_assistant.client.data.repository.MediaItemRepository
+import io.music_assistant.client.data.repository.favoriteAfter
+import io.music_assistant.client.data.repository.fetchRecommendationRowItems
+import io.music_assistant.client.data.repository.fetchRecommendationRows
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.DataState
 import io.music_assistant.client.ui.compose.common.action.PlayerAction
 import io.music_assistant.client.ui.compose.common.action.QueueAction
 import io.music_assistant.client.utils.AuthProcessState
 import io.music_assistant.client.utils.DataConnectionState
+import io.music_assistant.client.utils.HasConnectionData
 import io.music_assistant.client.utils.SessionState
 import io.music_assistant.client.utils.resultAs
+import io.music_assistant.sendspin.api.PlayerState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlin.time.Duration.Companion.seconds
+
+val HomeScreenViewModel.PlayersState.Data.selectedPlayer: PlayerData?
+    get() = selectedPlayerIndex?.let(playerData::getOrNull)
+
+// Resolved against the same list it indexes: an index taken from a separately scheduled
+// flow can belong to the previous list, and the pager would then land on (and persist)
+// whichever player shifted into that slot.
+internal fun List<PlayerData>.indexOfPlayer(id: String?): Int? =
+    id?.let { indexOfFirst { it.playerId == id }.takeIf { it >= 0 } }
+
+// Deep-link player lookup, as the web frontend does it: selectable players only, case-insensitive.
+// An id match wins over a name match because names are not unique.
+internal fun List<Player>.findByIdOrName(query: String): Player? =
+    filter { it.isSelectable }.let { candidates ->
+        candidates.find { it.id.equals(query, ignoreCase = true) }
+            ?: candidates.find { it.name.equals(query, ignoreCase = true) }
+    }
 
 @OptIn(FlowPreview::class)
 class HomeScreenViewModel(
     private val apiClient: ServiceClient,
     private val dataSource: MainDataSource,
     private val settings: SettingsRepository,
+    private val mediaItemRepository: MediaItemRepository,
+    private val playDispatcher: PlayDispatcher,
 ) : ViewModel() {
-
     private val jobs = mutableListOf<Job>()
+    private var loadDataJob: Job? = null
+    private var deepLinkPlayerJob: Job? = null
 
-    val serverUrl = apiClient.serverBaseUrl
     private val _links = MutableSharedFlow<String>()
     val links = _links.asSharedFlow()
 
+    // Local (Sendspin) player identity — used by the group dialog to decide
+    // whether to show the playback-delay adjuster.
+    val localPlayerId: String
+        get() = settings.sendspinEffectivePlayerId.value
 
-    private val _recommendationsState = MutableStateFlow(
-        RecommendationsState(
-            connectionState = SessionState.Disconnected.Initial,
-            recommendations = DataState.Loading()
-        )
+    fun adjustSendspinStaticDelayMs(deltaMs: Int) {
+        settings.setSendspinStaticDelayMs(settings.sendspinStaticDelayMs.value + deltaMs)
+    }
+
+    /** Live elapsed-time flow for the slider. Ticks at 500 ms only while playing + subscribed. */
+    fun observePosition(queueId: String) = dataSource.positionTracker.observe(queueId)
+
+    /**
+     * Server-synced `audiobook_chapter_progress` gate for the chapter-relative timeline.
+     * The web frontend owns the toggle; this client refreshes it on connect.
+     */
+    val chapterProgressEnabled: StateFlow<Boolean> =
+        dataSource.userPreferences.chapterProgressEnabled
+            .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /**
+     * Seconds of audio buffered ahead of the local playhead, sampled to ~2 Hz so the buffered
+     * segment on the slider tracks the position tick without spamming recomposition.
+     */
+    fun observeLocalBufferedSeconds() = dataSource.localBufferedSeconds.sample(BUFFER_REAL_INTERVAL)
+
+    /** User toggle: whether the now-playing slider draws the buffered-ahead segment. */
+    val showBufferVisualization = settings.showBufferVisualization
+
+    /** One-time hint that the expanded player swipes between players. */
+    val playerSwipeHintShown = settings.playerSwipeHintShown
+
+    fun onPlayerSwipeHintShown() = settings.setPlayerSwipeHintShown()
+
+    /** Server-side sleep timers exist from schema 35 on; hide the whole feature below that. */
+    val sleepTimerSupported: StateFlow<Boolean> =
+        apiClient.sessionState
+            .map { supportsSleepTimer((it as? HasConnectionData)?.serverInfo?.schemaVersion) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
+
+    /**
+     * Older servers dissolve the group and stop playback when the leader leaves, so the
+     * leave gesture is hidden below the handoff floor.
+     */
+    val leaderLeaveSupported: StateFlow<Boolean> =
+        apiClient.sessionState
+            .map { supportsLeaderLeave((it as? HasConnectionData)?.serverInfo?.schemaVersion) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
+
+    private val dismissedUnsupportedInstall = MutableStateFlow<String?>(null)
+
+    /**
+     * Id of the connected server while it reports `unsupported_install` and the user has not
+     * dismissed the warning for it. The dismissal lasts as long as this ViewModel.
+     */
+    val unsupportedInstallServerId: StateFlow<String?> =
+        combine(apiClient.sessionState, dismissedUnsupportedInstall) { state, dismissed ->
+            (state as? HasConnectionData)?.serverInfo
+                ?.takeIf { it.unsupportedInstall && it.serverId != dismissed }
+                ?.serverId
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    fun dismissUnsupportedInstall(serverId: String) {
+        dismissedUnsupportedInstall.value = serverId
+    }
+
+    private val _connectionState = MutableStateFlow<SessionState>(SessionState.Disconnected.Initial)
+    val connectionState = _connectionState.asStateFlow()
+
+    private val _state = MutableStateFlow(
+        State(
+            shortcuts = DataState.Loading(),
+            recommendations = DataState.Loading(),
+            homeRowsConfig = settings.homeRowsConfig.value,
+        ),
     )
-    val recommendationsState = _recommendationsState.asStateFlow()
+    val state = _state.asStateFlow()
 
     private val _playersState =
         MutableStateFlow<PlayersState>(PlayersState.Loading)
@@ -66,7 +183,7 @@ class HomeScreenViewModel(
     init {
         viewModelScope.launch {
             apiClient.sessionState.collect { connection ->
-                _recommendationsState.update { state -> state.copy(connectionState = connection) }
+                _connectionState.value = connection
                 when (connection) {
                     is SessionState.Reconnecting -> {
                         // Preserve UI state during reconnection - don't stop jobs or reload data
@@ -75,27 +192,33 @@ class HomeScreenViewModel(
 
                     is SessionState.Connected -> {
                         when (val connState = connection.dataConnectionState) {
-                            DataConnectionState.Authenticated -> {
-                                // Load recommendations when data connection is ready
-                                if (_recommendationsState.value.recommendations is DataState.Loading) {
-                                    loadRecommendations()
+                            is DataConnectionState.Authenticated -> {
+                                if (_state.value.recommendations !is DataState.Data) {
+                                    loadData()
                                 }
-                                _playersState.update { PlayersState.Loading }
+                                // Only show loading if we don't have cached data (e.g. fresh connect).
+                                // During reconnection the existing player list stays visible.
+                                if (_playersState.value !is PlayersState.Data) {
+                                    _playersState.update { PlayersState.Loading }
+                                }
                                 stopJobs()
                                 jobs.add(watchPlayersData())
-                                jobs.add(watchSelectedPlayerData())
                             }
 
                             is DataConnectionState.AwaitingAuth -> {
                                 when (connState.authProcessState) {
                                     AuthProcessState.NotStarted,
-                                    AuthProcessState.InProgress -> {
-                                        _playersState.update { PlayersState.Loading }
+                                    AuthProcessState.InProgress,
+                                        -> {
+                                        if (_playersState.value !is PlayersState.Data) {
+                                            _playersState.update { PlayersState.Loading }
+                                        }
                                         stopJobs()
                                     }
 
                                     AuthProcessState.LoggedOut,
-                                    is AuthProcessState.Failed -> {
+                                    is AuthProcessState.Failed,
+                                        -> {
                                         _playersState.update { PlayersState.NoAuth }
                                         stopJobs()
                                     }
@@ -103,22 +226,29 @@ class HomeScreenViewModel(
                             }
 
                             DataConnectionState.AwaitingServerInfo -> {
-                                _playersState.update { PlayersState.Loading }
+                                if (_playersState.value !is PlayersState.Data) {
+                                    _playersState.update { PlayersState.Loading }
+                                }
                                 stopJobs()
                             }
                         }
                     }
 
                     SessionState.Connecting -> {
-                        _playersState.update { PlayersState.Loading }
+                        if (_playersState.value !is PlayersState.Data) {
+                            _playersState.update { PlayersState.Loading }
+                        }
+                        loadDataJob?.cancel()
                         stopJobs()
                     }
 
                     is SessionState.Disconnected -> {
+                        loadDataJob?.cancel()
                         when (connection) {
                             is SessionState.Disconnected.Error,
                             SessionState.Disconnected.Initial,
-                            SessionState.Disconnected.ByUser -> {
+                            SessionState.Disconnected.ByUser,
+                                -> {
                                 _playersState.update { PlayersState.Disconnected }
                                 stopJobs()
                             }
@@ -132,85 +262,186 @@ class HomeScreenViewModel(
                                 // Preserve current state for instant foreground reconnect
                             }
                         }
-
                     }
                 }
             }
         }
 
-        // Listen to real-time events for track updates in recommendations
         viewModelScope.launch {
-            apiClient.events.collect { event ->
-                when (event) {
-                    is MediaItemUpdatedEvent,
-                    is MediaItemAddedEvent,
-                    is MediaItemDeletedEvent -> {
-                        event.data?.let { updateRecommendationsIfNeeded(it) }
-                    }
-
-                    else -> Unit
-                }
+            settings.homeRowsConfig.collect { config ->
+                _state.update { it.copy(homeRowsConfig = config) }
             }
+        }
+
+        // Listen to real-time library changes to refresh tracks already shown
+        // in the recommendations grid.
+        viewModelScope.launch {
+            mediaItemRepository.itemChanges.collect { change ->
+                (change.item as? Track)?.let { updateRecommendationsIfNeeded(it, change) }
+            }
+        }
+
+        // A played state change moves an item into or out of the play-history rows. The wait
+        // joins the burst of one finished track: the track, then each of its artists. The filter
+        // runs off the main thread, so the other server events never wait for it.
+        viewModelScope.launch {
+            apiClient.events
+                .filterIsInstance<PlaylogUpdatedEvent>()
+                .filter { event -> event.data.userId?.let { it == currentUserId() } ?: true }
+                .flowOn(Dispatchers.Default)
+                .debounce(PLAYLOG_REFRESH_DELAY)
+                .collect { refreshRecommendations() }
         }
     }
 
-    private fun loadRecommendations() {
-        viewModelScope.launch {
-            _recommendationsState.update { it.copy(recommendations = DataState.Loading()) }
-            getList<AppMediaItem.RecommendationFolder>(Request.Library.recommendations())
-                ?.let { items ->
-                    _recommendationsState.update { it.copy(recommendations = DataState.Data(items)) }
-                } ?: run {
-                _recommendationsState.update { it.copy(recommendations = DataState.Error()) }
-            }
+    fun loadData() {
+        loadDataJob?.cancel()
+
+        _state.update {
+            it.copy(
+                recommendations = DataState.Loading(),
+                shortcuts = DataState.Loading(),
+            )
+        }
+
+        loadDataJob = viewModelScope.launch {
+            launch { loadShortcuts() }
+            loadRecommendations()
         }
     }
 
-    fun onPlayClick(item: AppMediaItem, option: QueueOption, radio: Boolean) {
-        dataSource.selectedPlayer?.queueOrPlayerId?.let { queueId ->
-            item.uri?.let { uri ->
-                viewModelScope.launch {
-                    apiClient.sendRequest(
-                        Request.Library.play(
-                            media = listOf(uri),
-                            queueOrPlayerId = queueId,
-                            option = option,
-                            radioMode = radio
-                        )
+    private suspend fun loadRecommendations() {
+        val folders = mediaItemRepository.fetchRecommendationRows().getOrElse { error ->
+            if (error is CancellationException) throw error
+            Logger.e("Error fetching recommendations: $error")
+            _state.update { it.copy(recommendations = DataState.Error()) }
+            return
+        }
+
+        // Show every row as a loading placeholder, then fetch each row's items
+        // as its own job.
+        setRecommendationRows(folders.map { RecommendationRowState(it, DataState.Loading()) })
+        coroutineScope {
+            folders.forEach { folder ->
+                launch {
+                    setRowItems(
+                        folder,
+                        mediaItemRepository.fetchRecommendationRowItems(folder).orEmpty(),
                     )
                 }
             }
         }
     }
 
-    private fun updateRecommendationsIfNeeded(serverItem: ServerMediaItem) {
-        val recommendationsData =
-            (_recommendationsState.value.recommendations as? DataState.Data)?.data
-        if (recommendationsData != null) {
-            val updated = recommendationsData.map { row ->
-                row.items?.let { itemsList ->
-                    val updatedItems = itemsList.map { item ->
-                        if (item is AppMediaItem.Track && item.hasAnyMappingFrom(serverItem)) {
-                            serverItem.toAppMediaItem() as? AppMediaItem.Track ?: item
-                        } else {
-                            item
-                        }
+    /**
+     * Fetches the rows again and shows them in one update, so the rows on screen stay until the
+     * answer arrives. A row whose items fail keeps its old items. A running [loadData] wins.
+     */
+    private fun refreshRecommendations() {
+        if (loadDataJob?.isActive == true) return
+        loadDataJob = viewModelScope.launch {
+            val folders = mediaItemRepository.fetchRecommendationRows().getOrElse { error ->
+                if (error is CancellationException) throw error
+                Logger.w("Error refreshing recommendations: $error")
+                return@launch
+            }
+            val rows = coroutineScope {
+                folders.map { folder ->
+                    async {
+                        val items = mediaItemRepository.fetchRecommendationRowItems(folder)
+                            ?: shownRow(folder)?.resolvedItems.orEmpty()
+                        RecommendationRowState(folder, DataState.Data(items))
                     }
-                    // Create new RecommendationFolder with updated items
-                    AppMediaItem.RecommendationFolder(
-                        itemId = row.itemId,
-                        provider = row.provider,
-                        name = row.name,
-                        providerMappings = row.providerMappings,
-                        uri = row.uri,
-                        image = row.image,
-                        items = updatedItems
-                    )
-                } ?: row
+                }.awaitAll()
             }
-            _recommendationsState.update {
-                it.copy(recommendations = DataState.Data(updated))
+            setRecommendationRows(rows)
+        }
+    }
+
+    private fun shownRow(folder: RecommendationFolder): RecommendationRowState? =
+        _state.value.recommendations.dataOrNull?.firstOrNull { it.folder.isSameRow(folder) }
+
+    private fun currentUserId(): String? =
+        (apiClient.sessionState.value as? HasConnectionData)?.user?.userId
+
+    private fun setRecommendationRows(rows: List<RecommendationRowState>) {
+        _state.update { it.copy(recommendations = DataState.Data(rows)) }
+    }
+
+    private fun setRowItems(folder: RecommendationFolder, items: List<AppMediaItem>) {
+        _state.update { state ->
+            val rows = (state.recommendations as? DataState.Data)?.data
+                ?: return@update state
+            val updated = rows.map { row ->
+                if (row.folder.isSameRow(folder)) {
+                    row.copy(items = DataState.Data(items))
+                } else {
+                    row
+                }
             }
+            state.copy(recommendations = DataState.Data(updated))
+        }
+    }
+
+    private suspend fun loadShortcuts() {
+        val shortcutUris = apiClient.sendRequest(Request(APICommands.AUTH_ME))
+            .resultAs<ServerUser>()?.preferences?.shortcuts
+        val shortcuts = shortcutUris?.mapNotNull {
+            mediaItemRepository.fetchMediaItem(
+                Request(
+                    command = APICommands.MUSIC_ITEM_BY_URI,
+                    args = buildJsonObject {
+                        put("uri", JsonPrimitive(it))
+                    },
+                ),
+            ).getOrNull()
+        }?.map { Shortcut(it) }
+        _state.update {
+            it.copy(
+                shortcuts = if (shortcuts != null) DataState.Data(shortcuts) else DataState.NoData(),
+            )
+        }
+    }
+
+    fun onPlayClick(item: AppMediaItem, mode: PlayMode) {
+        dataSource.selectedPlayer?.queueOrPlayerId?.let { playOnQueue(it, item, mode) }
+    }
+
+    /** Plays [item] on the queue that the caller names, for a surface that shows several players. */
+    fun playOnQueue(queueOrPlayerId: String, item: AppMediaItem, mode: PlayMode) {
+        val mediaUri = item.mediaUri ?: return
+        Logger.withTag("PlayDispatch")
+            .i { "HomeScreenViewModel: uri=$mediaUri mode=$mode queue=$queueOrPlayerId" }
+        playDispatcher.play(
+            PlayRequest(
+                queueOrPlayerId = queueOrPlayerId,
+                media = listOf(mediaUri),
+                option = mode.option,
+                endlessMixMode = mode.endlessMix && item !is Genre,
+                shuffle = mode.shuffle,
+                startFromBeginning = mode.startFromBeginning,
+            ),
+        )
+    }
+
+    private fun updateRecommendationsIfNeeded(changed: Track, change: MediaItemChange) {
+        // Read-and-map inside the update lambda so a concurrent recommendations
+        // write can never be clobbered with rows derived from a stale read.
+        _state.update { state ->
+            val rows = (state.recommendations as? DataState.Data)?.data
+                ?: return@update state
+            val updated = rows.map { row ->
+                val items = (row.items as? DataState.Data)?.data ?: return@map row
+                val updatedItems = items.map { item ->
+                    if (item is Track && item.hasAnyMappingFrom(changed)) {
+                        changed.withFavorite(change.favoriteAfter(item.favorite))
+                    } else {
+                        item
+                    }
+                }
+                row.copy(items = DataState.Data(updatedItems))
+            }
+            state.copy(recommendations = DataState.Data(updated))
         }
     }
 
@@ -222,91 +453,99 @@ class HomeScreenViewModel(
     private fun watchPlayersData(): Job = viewModelScope.launch {
         combine(
             dataSource.playersData,
-            dataSource.sendspinState
-        ) { playerData, sendspinState ->
-            playerData to sendspinState
-        }.collect { (playerData, sendspinState) ->
+            dataSource.selectedPlayerId,
+            dataSource.sendspinState,
+        ) { playerData, selectedId, sendspinState ->
+            Triple(playerData, selectedId, sendspinState)
+        }.collect { (playerData, selectedId, sendspinState) ->
             // Update when in Loading or Data state
             // This allows transitioning from Loading to Data and updating existing Data
             // Don't update terminal states (Disconnected, NoAuth, NoServer)
             val currentState = _playersState.value
             if (currentState is PlayersState.Loading || currentState is PlayersState.Data) {
+                // The pager shows only players the app can act on; the player list shows all.
+                fun dataOf(all: List<PlayerData>): PlayersState.Data {
+                    val pageable = all.filter { it.player.isSelectable }
+                    return PlayersState.Data(
+                        playerData = pageable,
+                        selectedPlayerIndex = pageable.indexOfPlayer(selectedId),
+                        localPlayerId = dataSource.localPlayer.value?.playerId,
+                        sendspinState = sendspinState,
+                        allPlayerData = all,
+                    )
+                }
                 _playersState.update {
                     when (playerData) {
-                        is DataState.Data -> PlayersState.Data(
-                            playerData.data,
-                            dataSource.selectedPlayerIndex.value,
-                            dataSource.localPlayer.value?.playerId,
-                            sendspinState
-                        )
-
-                        is DataState.Stale -> PlayersState.Data(
-                            playerData.data,  // Show stale data as normal data
-                            dataSource.selectedPlayerIndex.value,
-                            dataSource.localPlayer.value?.playerId,
-                            sendspinState
-                        )
+                        is DataState.Data -> dataOf(playerData.data)
+                        // Show stale data as normal data
+                        is DataState.Stale -> dataOf(playerData.data)
 
                         is DataState.Error -> PlayersState.Error
                         is DataState.Loading -> PlayersState.Loading
                         is DataState.NoData -> PlayersState.Data(emptyList())
                     }
-
                 }
             }
         }
     }
 
-    private fun watchSelectedPlayerData(): Job = viewModelScope.launch {
-        dataSource.selectedPlayerIndex.filterNotNull().collect { index ->
-            val dataState = _playersState.value as? PlayersState.Data
-            dataState?.let { state ->
-                _playersState.update { state.copy(selectedPlayerIndex = index) }
-            }
+    fun selectPlayer(player: Player) = dataSource.selectPlayer(player)
+
+    /**
+     * Selects the player that a deep link names by id or name. Waits for the player list
+     * (cold launch) for a bounded time; no match in that time keeps the current selection.
+     */
+    fun selectPlayerByIdOrName(query: String) {
+        deepLinkPlayerJob?.cancel()
+        deepLinkPlayerJob = viewModelScope.launch {
+            withTimeoutOrNull(DEEP_LINK_PLAYER_TIMEOUT) {
+                dataSource.playersData
+                    .mapNotNull { state -> state.dataOrNull?.map { it.player }?.findByIdOrName(query) }
+                    .first()
+            }?.let(dataSource::selectPlayer)
+                ?: Logger.withTag("HomeScreenVM").w { "Deep link: no selectable player '$query'" }
         }
     }
-
-    fun refreshPlayers() = dataSource.refreshPlayersAndQueues()
-    fun selectPlayer(player: Player) = dataSource.selectPlayer(player)
     fun playerAction(playerId: String, action: PlayerAction) =
         dataSource.playerAction(playerId, action)
 
     fun playerAction(data: PlayerData, action: PlayerAction) = dataSource.playerAction(data, action)
     fun queueAction(action: QueueAction) = dataSource.queueAction(action)
+    fun setSleepTimer(playerId: String, seconds: Int) =
+        dataSource.setSleepTimer(playerId, seconds)
+
+    fun clearSleepTimer(playerId: String) = dataSource.clearSleepTimer(playerId)
+
     fun onPlayersSortChanged(newSort: List<String>) = dataSource.onPlayersSortChanged(newSort)
     fun openPlayerSettings(id: String) = settings.connectionInfo.value?.webUrl?.let { url ->
-        onOpenExternalLink("$url/?code=${currentServerToken() ?: ""}#/settings/editplayer/$id")
+        onOpenExternalLink("$url/?code=${currentServerToken().orEmpty()}#/settings/editplayer/$id")
     }
 
     fun openPlayerDspSettings(id: String) = settings.connectionInfo.value?.webUrl?.let { url ->
-        onOpenExternalLink("$url/?code=${currentServerToken() ?: ""}#/settings/editplayer/$id/dsp")
+        onOpenExternalLink("$url/?code=${currentServerToken().orEmpty()}#/settings/editplayer/$id/dsp")
     }
 
-    private fun currentServerToken(): String? = when (val state = apiClient.sessionState.value) {
-        is SessionState.Connected.Direct ->
-            settings.getTokenForServer(settings.getDirectServerIdentifier(state.connectionInfo.host, state.connectionInfo.port, state.connectionInfo.isTls))
-        is SessionState.Connected.WebRTC ->
-            settings.getTokenForServer(settings.getWebRTCServerIdentifier(state.remoteId.rawId))
-        else -> null
-    }
+    private fun currentServerToken(): String? =
+        (apiClient.sessionState.value as? SessionState.Connected)
+            ?.serverInfo?.serverId?.let { settings.getTokenForServer(it) }
 
     private fun onOpenExternalLink(url: String) = viewModelScope.launch { _links.emit(url) }
 
+    /**
+     * Persists the edited working list. Prefs for folders not currently present
+     * on the server (e.g. temporarily item-less, so absent from the working list)
+     * are carried over so their visibility/order isn't lost.
+     */
+    fun saveHomeRows(working: List<SettingsRepository.HomeRowPref>) {
+        val presentIds = working.mapTo(mutableSetOf()) { it.id }
+        val carriedOver = settings.homeRowsConfig.value.filterNot { it.id in presentIds }
+        settings.setHomeRowsConfig(working + carriedOver)
+    }
 
-    @Suppress("UNCHECKED_CAST")
-    private suspend fun <T : AppMediaItem> getList(
-        request: Request,
-    ): List<T>? =
-        apiClient.sendRequest(request).let { result ->
-            if (result.isFailure) {
-                Logger.e("Error fetching list for request $request: ${result.exceptionOrNull()}")
-            }
-            result.resultAs<List<ServerMediaItem>>()?.toAppMediaItemList()?.mapNotNull { it as? T }
-        }
-
-    data class RecommendationsState(
-        val connectionState: SessionState,
-        val recommendations: DataState<List<AppMediaItem.RecommendationFolder>>
+    data class State(
+        val shortcuts: DataState<List<Shortcut>>,
+        val recommendations: DataState<List<RecommendationRowState>>,
+        val homeRowsConfig: List<SettingsRepository.HomeRowPref> = emptyList(),
     )
 
     sealed class PlayersState {
@@ -319,7 +558,31 @@ class HomeScreenViewModel(
             val playerData: List<PlayerData>,
             val selectedPlayerIndex: Int? = null,
             val localPlayerId: String? = null,
-            val sendspinState: SendspinState? = null
+            val sendspinState: PlayerState? = null,
+            /** Every listed player, including those left out of [playerData]. */
+            val allPlayerData: List<PlayerData> = playerData,
         ) : PlayersState()
     }
+
+    private companion object {
+        private const val BUFFER_REAL_INTERVAL = 500L
+        private val DEEP_LINK_PLAYER_TIMEOUT = 10.seconds
+        private val PLAYLOG_REFRESH_DELAY = 1.5.seconds
+    }
 }
+
+/**
+ * One home-page recommendation row: the folder identity plus its items as an
+ * independently loading [DataState], so each row can render a placeholder
+ * while its contents are fetched.
+ */
+data class RecommendationRowState(
+    val folder: RecommendationFolder,
+    val items: DataState<List<AppMediaItem>>,
+) {
+    /** The row's items when resolved, or null while still loading (or on error). */
+    val resolvedItems: List<AppMediaItem>? get() = (items as? DataState.Data)?.data
+}
+
+private fun RecommendationFolder.isSameRow(other: RecommendationFolder): Boolean =
+    itemId == other.itemId && provider == other.provider

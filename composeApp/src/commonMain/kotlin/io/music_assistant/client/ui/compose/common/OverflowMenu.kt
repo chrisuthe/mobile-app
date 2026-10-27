@@ -1,11 +1,14 @@
 package io.music_assistant.client.ui.compose.common
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -18,45 +21,94 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun OverflowMenu(
+fun OverflowMenuButton(
     modifier: Modifier = Modifier,
-    options: List<OverflowMenuOption>,
+    options: List<OverflowMenuEntry>,
     buttonContent: @Composable (onClick: () -> Unit) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box(
-        modifier = modifier.wrapContentSize(Alignment.TopStart)
+        modifier = modifier.wrapContentSize(Alignment.TopStart),
     ) {
         buttonContent { expanded = true }
-        DropdownMenu(
+        OverflowMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    onClick = {
-                        option.onClick()
-                        expanded = false
-                    },
-                    leadingIcon = option.icon?.let {
-                        {
-                            Icon(
-                                imageVector = it,
-                                contentDescription = option.title
-                            )
-                        }
-                    },
-                    text = {
-                        Text(modifier = Modifier.padding(all = 4.dp), text = option.title)
-                    }
-                )
+            onClose = { expanded = false },
+            options = options,
+        )
+    }
+}
+
+@Composable
+fun OverflowMenu(expanded: Boolean, onClose: () -> Unit = {}, options: List<OverflowMenuEntry>) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = { onClose() },
+    ) {
+        options.forEach { entry ->
+            when (entry) {
+                is OverflowMenuOption -> entry.MenuItem(onClose)
+                OverflowMenuDivider -> HorizontalDivider()
             }
         }
     }
 }
 
+/** An entry in an overflow menu: either a clickable [OverflowMenuOption] or an [OverflowMenuDivider]. */
+sealed interface OverflowMenuEntry
+
+/** Visual separator between option groups (e.g. player actions vs track actions). */
+data object OverflowMenuDivider : OverflowMenuEntry
+
 data class OverflowMenuOption(
     val title: String,
+    // Optional second line under [title], e.g. the current value of a setting.
+    val subtitle: String? = null,
     val icon: ImageVector? = null,
-    val onClick: () -> Unit
-)
+    val trailingIcon: ImageVector? = null,
+    // Optional composable leading icon; takes precedence over [icon] for non-vector
+    // glyphs (e.g. an MDI font icon via PlayerIcon/MdiIcon).
+    val leadingContent: (@Composable () -> Unit)? = null,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+) : OverflowMenuEntry
+
+/** Renders this option as a menu row. Must be called inside a Material 3 menu container. */
+@Composable
+fun OverflowMenuOption.MenuItem(onClose: () -> Unit) {
+    DropdownMenuItem(
+        onClick = {
+            onClick()
+            onClose()
+        },
+        enabled = enabled,
+        leadingIcon = leadingContent ?: icon?.let {
+            {
+                Icon(
+                    imageVector = it,
+                    contentDescription = title,
+                )
+            }
+        },
+        trailingIcon = trailingIcon?.let {
+            {
+                Icon(
+                    imageVector = it,
+                    contentDescription = null,
+                )
+            }
+        },
+        text = {
+            Column(modifier = Modifier.padding(all = 4.dp)) {
+                Text(text = title)
+                subtitle?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+    )
+}

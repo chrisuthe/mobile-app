@@ -1,82 +1,81 @@
 package io.music_assistant.client.ui.compose.common.items
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.AddToQueue
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlaylistAddCircle
-import androidx.compose.material.icons.filled.QueuePlayNext
-import androidx.compose.material.icons.filled.Radio
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import compose.icons.TablerIcons
-import compose.icons.tablericons.FolderMinus
-import compose.icons.tablericons.FolderPlus
-import compose.icons.tablericons.Heart
-import compose.icons.tablericons.HeartBroken
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.server.QueueOption
-import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
-import kotlinx.coroutines.launch
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Replay
+import androidx.compose.ui.draw.alpha
+import io.music_assistant.client.data.model.client.items.Album
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.Artist
+import io.music_assistant.client.data.model.client.items.Audiobook
+import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
+import io.music_assistant.client.data.model.client.items.Playlist
+import io.music_assistant.client.data.model.client.items.Podcast
+import io.music_assistant.client.data.model.client.items.RecommendationFolder
+import io.music_assistant.client.settings.ViewMode
+import io.music_assistant.client.ui.compose.common.ConfirmationDialog
+import io.music_assistant.client.ui.compose.common.LocalDislikeSupported
+import io.music_assistant.client.ui.compose.common.LocalGrantedScopes
+import io.music_assistant.client.ui.compose.common.MenuItem
+import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.action_remove
+import musicassistantclient.composeapp.generated.resources.dialog_remove_from_playlist_message
+import musicassistantclient.composeapp.generated.resources.dialog_remove_from_playlist_title
+import org.jetbrains.compose.resources.stringResource
 
 @Composable
 fun AlbumWithMenu(
-    item: AppMediaItem.Album,
-    showSubtitle: Boolean,
-    rowMode: Boolean = false,
-    onNavigateClick: (AppMediaItem.Album) -> Unit,
-    onPlayOption: ((AppMediaItem.Album, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    serverUrl: String?
+    item: Album,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Album) -> Unit,
+    navigateToItem: (AppMediaItem) -> Unit,
+    containerItem: AppMediaItem? = null,
+    onPlayOption: PlayHandler<Album>,
+    playlistActions: PlaylistActions? = null,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
+    subtitle: AlbumSubtitle = AlbumSubtitle.ARTISTS,
 ) {
     BrowsableItemWithMenu(
-        modifier = if (rowMode) Modifier.fillMaxWidth() else Modifier,
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
         item = item,
         onNavigateClick = onNavigateClick,
+        navigateToItem = navigateToItem,
+        containerItem = containerItem,
         onPlayOption = onPlayOption,
         playlistActions = playlistActions,
         libraryActions = libraryActions,
     ) { mod, onClick, onLongClick ->
-        if (rowMode) {
-            AlbumRowItem(
+        when (viewMode) {
+            ViewMode.LIST -> AlbumRowItem(
                 modifier = mod,
                 item = item,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
+                subtitle = subtitle,
             )
-        } else {
-            AlbumGridItem(
+            ViewMode.GRID -> AlbumGridItem(
+                modifier = mod,
                 item = item,
-                showSubtitle = showSubtitle,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
+                subtitle = subtitle,
             )
         }
     }
@@ -84,41 +83,37 @@ fun AlbumWithMenu(
 
 @Composable
 fun ArtistWithMenu(
-    item: AppMediaItem.Artist,
-    showSubtitle: Boolean,
-    rowMode: Boolean = false,
-    onNavigateClick: (AppMediaItem.Artist) -> Unit,
-    onPlayOption: ((AppMediaItem.Artist, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    serverUrl: String?
+    item: Artist,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Artist) -> Unit,
+    onPlayOption: PlayHandler<Artist>,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     BrowsableItemWithMenu(
-        modifier = if (rowMode) Modifier.fillMaxWidth() else Modifier,
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
         item = item,
         onNavigateClick = onNavigateClick,
         onPlayOption = onPlayOption,
-        playlistActions = playlistActions,
         libraryActions = libraryActions,
     ) { mod, onClick, onLongClick ->
-        if (rowMode) {
-            ArtistRowItem(
+        when (viewMode) {
+            ViewMode.LIST -> ArtistRowItem(
                 modifier = mod,
                 item = item,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
-        } else {
-            ArtistGridItem(
+            ViewMode.GRID -> ArtistGridItem(
+                modifier = mod,
                 item = item,
-                showSubtitle = showSubtitle,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
         }
     }
@@ -126,41 +121,37 @@ fun ArtistWithMenu(
 
 @Composable
 fun PlaylistWithMenu(
-    item: AppMediaItem.Playlist,
-    showSubtitle: Boolean,
-    rowMode: Boolean = false,
-    onNavigateClick: (AppMediaItem.Playlist) -> Unit,
-    onPlayOption: ((AppMediaItem.Playlist, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    serverUrl: String?
+    item: Playlist,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Playlist) -> Unit,
+    onPlayOption: PlayHandler<Playlist>,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     BrowsableItemWithMenu(
-        modifier = if (rowMode) Modifier.fillMaxWidth() else Modifier,
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
         item = item,
         onNavigateClick = onNavigateClick,
         onPlayOption = onPlayOption,
-        playlistActions = playlistActions,
         libraryActions = libraryActions,
     ) { mod, onClick, onLongClick ->
-        if (rowMode) {
-            PlaylistRowItem(
+        when (viewMode) {
+            ViewMode.LIST -> PlaylistRowItem(
                 modifier = mod,
                 item = item,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
-        } else {
-            PlaylistGridItem(
+            ViewMode.GRID -> PlaylistGridItem(
+                modifier = mod,
                 item = item,
-                showSubtitle = showSubtitle,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
         }
     }
@@ -168,43 +159,116 @@ fun PlaylistWithMenu(
 
 @Composable
 fun AudiobookWithMenu(
-    item: AppMediaItem.Audiobook,
-    showSubtitle: Boolean,
-    rowMode: Boolean = false,
-    onNavigateClick: (AppMediaItem.Audiobook) -> Unit,
-    onPlayOption: ((AppMediaItem.Audiobook, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    progressActions: ActionsViewModel.ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    serverUrl: String?
+    item: Audiobook,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Audiobook) -> Unit,
+    onPlayOption: PlayHandler<Audiobook>,
+    playlistActions: PlaylistActions? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    libraryActions: LibraryActions,
+    progressActions: ProgressActions? = null,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     BrowsableItemWithMenu(
-        modifier = if (rowMode) Modifier.fillMaxWidth() else Modifier,
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
         item = item,
         onNavigateClick = onNavigateClick,
         onPlayOption = onPlayOption,
         playlistActions = playlistActions,
+        onRemoveFromPlaylist = onRemoveFromPlaylist,
         libraryActions = libraryActions,
         progressActions = progressActions,
     ) { mod, onClick, onLongClick ->
-        if (rowMode) {
-            AudiobookRowItem(
+        when (viewMode) {
+            ViewMode.LIST -> AudiobookRowItem(
                 modifier = mod,
                 item = item,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
-        } else {
-            AudiobookGridItem(
+            ViewMode.GRID -> AudiobookGridItem(
+                modifier = mod,
                 item = item,
-                showSubtitle = showSubtitle,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
+            )
+        }
+    }
+}
+
+@Composable
+fun MediaCollectionWithMenu(
+    item: MediaCollection,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (MediaCollection) -> Unit,
+    onPlayOption: PlayHandler<MediaCollection>,
+    libraryActions: LibraryActions,
+) {
+    BrowsableItemWithMenu(
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
+        item = item,
+        onNavigateClick = onNavigateClick,
+        onPlayOption = onPlayOption,
+        libraryActions = libraryActions,
+    ) { mod, onClick, onLongClick ->
+        when (viewMode) {
+            ViewMode.LIST -> MediaCollectionRowItem(
+                modifier = mod,
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+            ViewMode.GRID -> MediaCollectionGridItem(
+                modifier = mod,
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+        }
+    }
+}
+
+@Composable
+fun GenreWithMenu(
+    item: Genre,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Genre) -> Unit,
+    onPlayOption: PlayHandler<Genre>,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
+) {
+    BrowsableItemWithMenu(
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
+        item = item,
+        onNavigateClick = onNavigateClick,
+        onPlayOption = onPlayOption,
+        libraryActions = libraryActions,
+    ) { mod, onClick, onLongClick ->
+        when (viewMode) {
+            ViewMode.LIST -> GenreRowItem(
+                modifier = mod,
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+                providerIconFetcher = providerIconFetcher,
+            )
+            ViewMode.GRID -> GenreGridItem(
+                modifier = mod,
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+                providerIconFetcher = providerIconFetcher,
             )
         }
     }
@@ -212,282 +276,186 @@ fun AudiobookWithMenu(
 
 @Composable
 fun PodcastWithMenu(
-    item: AppMediaItem.Podcast,
-    showSubtitle: Boolean,
-    rowMode: Boolean = false,
-    onNavigateClick: (AppMediaItem.Podcast) -> Unit,
-    onPlayOption: ((AppMediaItem.Podcast, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    serverUrl: String?
+    item: Podcast,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (Podcast) -> Unit,
+    onPlayOption: PlayHandler<Podcast>,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     BrowsableItemWithMenu(
-        modifier = if (rowMode) Modifier.fillMaxWidth() else Modifier,
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
         item = item,
         onNavigateClick = onNavigateClick,
         onPlayOption = onPlayOption,
-        playlistActions = playlistActions,
         libraryActions = libraryActions,
     ) { mod, onClick, onLongClick ->
-        if (rowMode) {
-            PodcastRowItem(
+        when (viewMode) {
+            ViewMode.LIST -> PodcastRowItem(
                 modifier = mod,
                 item = item,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
-        } else {
-            PodcastGridItem(
+            ViewMode.GRID -> PodcastGridItem(
+                modifier = mod,
                 item = item,
-                showSubtitle = showSubtitle,
-                serverUrl = serverUrl,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                providerIconFetcher = providerIconFetcher
+                providerIconFetcher = providerIconFetcher,
             )
         }
     }
 }
 
+/**
+ * A playable browse folder offers the playback block on long press. Other folders (provider
+ * roots, the ".." entry) are navigation only: no menu, and not dimmed.
+ */
+@Composable
+fun FolderWithMenu(
+    item: RecommendationFolder,
+    viewMode: ViewMode = ViewMode.GRID,
+    onNavigateClick: (RecommendationFolder) -> Unit,
+    onPlayOption: PlayHandler<RecommendationFolder>,
+    libraryActions: LibraryActions,
+) {
+    when {
+        item.isPlayable -> BrowsableItemWithMenu(
+            modifier = when (viewMode) {
+                ViewMode.GRID -> Modifier
+                ViewMode.LIST -> Modifier.fillMaxWidth()
+            },
+            item = item,
+            onNavigateClick = onNavigateClick,
+            onPlayOption = onPlayOption,
+            libraryActions = libraryActions,
+        ) { mod, onClick, onLongClick ->
+            FolderCell(
+                modifier = mod,
+                item = item,
+                viewMode = viewMode,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+        }
+
+        else -> FolderCell(
+            item = item,
+            viewMode = viewMode,
+            onClick = onNavigateClick,
+            onLongClick = {},
+        )
+    }
+}
 
 @Composable
 private fun <T : AppMediaItem> BrowsableItemWithMenu(
     modifier: Modifier = Modifier,
     item: T,
     onNavigateClick: (T) -> Unit,
-    onPlayOption: ((T, QueueOption, Boolean) -> Unit),
-    playlistActions: ActionsViewModel.PlaylistActions? = null,
-    libraryActions: ActionsViewModel.LibraryActions,
-    progressActions: ActionsViewModel.ProgressActions? = null,
+    navigateToItem: ((AppMediaItem) -> Unit)? = null,
+    containerItem: AppMediaItem? = null,
+    onPlayOption: PlayHandler<T>,
+    playlistActions: PlaylistActions? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+    libraryActions: LibraryActions,
+    progressActions: ProgressActions? = null,
     itemComposable: @Composable (
         modifier: Modifier,
         onClick: (T) -> Unit,
         onLongClick: (T) -> Unit,
-    ) -> Unit
+    ) -> Unit,
 ) {
+    val clickActionConfig = LocalClickActionConfig.current
+    val clickContext = clickActionConfig.context
     var expandedItemId by remember { mutableStateOf<String?>(null) }
     var showPlaylistDialog by rememberSaveable { mutableStateOf(false) }
-    var playlists by remember { mutableStateOf<List<AppMediaItem.Playlist>>(emptyList()) }
-    var isLoadingPlaylists by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
+    var showRemoveConfirmation by remember { mutableStateOf(false) }
+    var showRemovePlaylistConfirmation by remember { mutableStateOf(false) }
+
+    val actions = resolveLongClickActions(
+        item = item,
+        clickContext = clickContext,
+        canEditLibrary = LocalGrantedScopes.current.canEditLibrary,
+        dislikeSupported = LocalDislikeSupported.current,
+        librarySupported = item !is Genre && item !is RecommendationFolder && item !is MediaCollection,
+        canAddToPlaylist = playlistActions != null && item.supportsAddToPlaylist,
+        canRemoveFromPlaylist = onRemoveFromPlaylist != null,
+        progressSupported = progressActions != null && item is Audiobook,
+        playMediaSupport = clickActionConfig.playMediaSupport,
+        customizationAllowed = false,
+    )
+
+    // Built outside the DropdownMenu so the multi-artist chooser dialog survives its dismissal.
+    val navOptions = navigateToItem
+        ?.let { item.navigationOptions(it, containerItem) }
+        ?: emptyList()
+
     Box(modifier = modifier) {
+        // Browsable items stay navigable even when non-playable; dim + drop playback actions.
+        val contentModifier = Modifier.align(Alignment.Center)
+            .then(if (item.isPlayable) Modifier else Modifier.alpha(DISABLED_ITEM_ALPHA))
         itemComposable(
-            Modifier.align(Alignment.Center),
+            contentModifier,
             onNavigateClick,
-            { expandedItemId = item.itemId },
-        )
+        ) { expandedItemId = item.itemId }
+
         DropdownMenu(
             expanded = expandedItemId == item.itemId,
-            onDismissRequest = { expandedItemId = null }
+            onDismissRequest = { expandedItemId = null },
         ) {
-            DropdownMenuItem(
-                text = { Text("Play now") },
-                onClick = {
-                    onPlayOption(item, QueueOption.REPLACE, false)
-                    expandedItemId = null
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Play now"
-                    )
+            ItemActionMenuItems(clickContext, actions) { action ->
+                expandedItemId = null
+                when (action) {
+                    is ItemAction.Play,
+                    ItemAction.StartEndlessMix,
+                    ItemAction.PlayFromHere,
+                    ItemAction.PlayShuffled,
+                    -> action.toPlayMode()?.let { onPlayOption(item, it) }
+                    ItemAction.AddToLibrary -> libraryActions.onLibraryClick(item)
+                    ItemAction.RemoveFromLibrary -> showRemoveConfirmation = true
+                    is ItemAction.SetFavorite -> libraryActions.onFavoriteChange(item, action.favorite)
+                    ItemAction.AddToPlaylist -> showPlaylistDialog = true
+                    ItemAction.MarkPlayed -> progressActions?.onMarkPlayed(item)
+                    ItemAction.MarkUnplayed -> progressActions?.onMarkUnplayed(item)
+                    ItemAction.RemoveFromPlaylist -> showRemovePlaylistConfirmation = true
+                    // Browsable items never surface Customize (playable-only menu entry).
+                    ItemAction.Customize -> Unit
+                    else -> Unit
                 }
-            )
-            DropdownMenuItem(
-                text = { Text("Insert next and play") },
-                onClick = {
-                    onPlayOption(item, QueueOption.PLAY, false)
-                    expandedItemId = null
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.PlaylistAddCircle,
-                        contentDescription = "Insert next and play"
-                    )
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Insert next") },
-                onClick = {
-                    onPlayOption(item, QueueOption.NEXT, false)
-                    expandedItemId = null
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.QueuePlayNext,
-                        contentDescription = "Insert next"
-                    )
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Add to bottom") },
-                onClick = {
-                    onPlayOption(item, QueueOption.ADD, false)
-                    expandedItemId = null
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.AddToQueue,
-                        contentDescription = "Add to bottom"
-                    )
-                }
-            )
-            if (item.canStartRadio) {
-                DropdownMenuItem(
-                    text = { Text("Start radio") },
-                    onClick = {
-                        onPlayOption(item, QueueOption.REPLACE, true)
-                        expandedItemId = null
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Radio,
-                            contentDescription = "Start radio"
-                        )
-                    }
-                )
             }
-            val libText = if (item.isInLibrary) "Remove from library" else "Add to library"
-            DropdownMenuItem(
-                text = { Text(libText) },
-                onClick = {
-                    libraryActions.onLibraryClick(item as AppMediaItem)
-                    expandedItemId = null
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector =
-                            if (item.isInLibrary) TablerIcons.FolderMinus
-                            else TablerIcons.FolderPlus,
-                        contentDescription = libText
-                    )
-                }
-            )
-
-
-            // Favorite management (only for library items)
-            if (item.isInLibrary) {
-                val favText = if (item.favorite == true) "Unfavorite" else "Favorite"
-                DropdownMenuItem(
-                    text = { Text(favText) },
-                    onClick = {
-                        (item as? AppMediaItem)?.let {
-                            libraryActions.onFavoriteClick(it)
-                            expandedItemId = null
-                        }
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector =
-                                if (item.favorite == true) TablerIcons.HeartBroken
-                                else TablerIcons.Heart,
-                            contentDescription = favText
-                        )
-                    }
-                )
-            }
-
-            if (playlistActions != null && (item is AppMediaItem.Album || item is AppMediaItem.Artist)) {
-                DropdownMenuItem(
-                    text = { Text("Add to playlist") },
-                    onClick = {
-                        showPlaylistDialog = true
-                        expandedItemId = null
-                        // Load playlists when dialog opens
-                        coroutineScope.launch {
-                            isLoadingPlaylists = true
-                            playlists = playlistActions.onLoadPlaylists()
-                            isLoadingPlaylists = false
-                        }
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                            contentDescription = "Add to playlist"
-                        )
-                    }
-                )
-            }
-
-            // Mark played/unplayed (audiobooks)
-            if (progressActions != null && item is AppMediaItem.Audiobook) {
-                val isPlayed = item.fullyPlayed == true
-                DropdownMenuItem(
-                    text = { Text(if (isPlayed) "Mark as unplayed" else "Mark as played") },
-                    onClick = {
-                        if (isPlayed) {
-                            progressActions.onMarkUnplayed(item)
-                        } else {
-                            progressActions.onMarkPlayed(item)
-                        }
-                        expandedItemId = null
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = if (isPlayed) Icons.Default.Replay else Icons.Default.Check,
-                            contentDescription = if (isPlayed) "Mark as unplayed" else "Mark as played"
-                        )
-                    }
-                )
-            }
+            navOptions.forEach { it.MenuItem(onClose = { expandedItemId = null }) }
         }
 
-        // Add to Playlist Dialog
-        if (showPlaylistDialog && item is AppMediaItem.Track) {
-            AlertDialog(
-                onDismissRequest = {
-                    showPlaylistDialog = false
-                    playlists = emptyList()
-                    isLoadingPlaylists = false
-                },
-                title = { Text("Add to Playlist") },
-                text = {
-                    if (isLoadingPlaylists) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator()
-                        }
-                    } else if (playlists.isEmpty()) {
-                        Text("No editable playlists available")
-                    } else {
-                        Column {
-                            playlists.forEach { playlist ->
-                                TextButton(
-                                    onClick = {
-                                        playlistActions?.onAddToPlaylist
-                                            ?.invoke(item, playlist)
-                                        showPlaylistDialog = false
-                                        playlists = emptyList()
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = playlist.name,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = {
-                        showPlaylistDialog = false
-                        playlists = emptyList()
-                        isLoadingPlaylists = false
-                    }) {
-                        Text("Cancel")
-                    }
-                }
+        if (showPlaylistDialog && playlistActions != null) {
+            AddToPlaylistDialog(
+                item = item,
+                playlistActions = playlistActions,
+                onDismiss = { showPlaylistDialog = false },
+            )
+        }
+
+        if (showRemoveConfirmation) {
+            RemoveFromLibraryConfirmationDialog(
+                item = item,
+                onConfirm = { libraryActions.onLibraryClick(item) },
+                onDismiss = { showRemoveConfirmation = false },
+            )
+        }
+
+        if (showRemovePlaylistConfirmation && onRemoveFromPlaylist != null) {
+            ConfirmationDialog(
+                title = stringResource(Res.string.dialog_remove_from_playlist_title),
+                message = stringResource(Res.string.dialog_remove_from_playlist_message, item.displayName),
+                confirmLabel = stringResource(Res.string.action_remove),
+                onConfirm = { onRemoveFromPlaylist.invoke() },
+                onDismiss = { showRemovePlaylistConfirmation = false },
             )
         }
     }
 }
-
-

@@ -5,11 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.plus
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -17,37 +18,69 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.server.QueueOption
+import io.music_assistant.client.data.model.client.items.Album
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.Artist
+import io.music_assistant.client.data.model.client.items.AudioSource
+import io.music_assistant.client.data.model.client.items.Audiobook
+import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
+import io.music_assistant.client.data.model.client.items.Playlist
+import io.music_assistant.client.data.model.client.items.Podcast
+import io.music_assistant.client.data.model.client.items.PodcastEpisode
+import io.music_assistant.client.data.model.client.items.RadioStation
+import io.music_assistant.client.data.model.client.items.RecommendationFolder
+import io.music_assistant.client.data.model.client.items.SoundEffect
+import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.settings.ViewMode
+import io.music_assistant.client.ui.compose.common.items.AlbumSubtitle
 import io.music_assistant.client.ui.compose.common.items.AlbumWithMenu
 import io.music_assistant.client.ui.compose.common.items.ArtistWithMenu
+import io.music_assistant.client.ui.compose.common.items.AudioSourceWithMenu
 import io.music_assistant.client.ui.compose.common.items.AudiobookWithMenu
+import io.music_assistant.client.ui.compose.common.items.FolderWithMenu
+import io.music_assistant.client.ui.compose.common.items.GenreWithMenu
+import io.music_assistant.client.ui.compose.common.items.LibraryActions
+import io.music_assistant.client.ui.compose.common.items.MediaCollectionWithMenu
+import io.music_assistant.client.ui.compose.common.items.PlayHandler
+import io.music_assistant.client.ui.compose.common.items.PlaylistActions
 import io.music_assistant.client.ui.compose.common.items.PlaylistWithMenu
 import io.music_assistant.client.ui.compose.common.items.PodcastEpisodeWithMenu
 import io.music_assistant.client.ui.compose.common.items.PodcastWithMenu
+import io.music_assistant.client.ui.compose.common.items.ProgressActions
 import io.music_assistant.client.ui.compose.common.items.RadioWithMenu
 import io.music_assistant.client.ui.compose.common.items.TrackWithMenu
-import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
+import io.music_assistant.client.ui.compose.common.items.lazyListOccurrenceKeys
+import io.music_assistant.client.ui.compose.grid.gridItemMinSize
 
 @Composable
 fun AdaptiveMediaGrid(
     modifier: Modifier = Modifier,
     items: List<AppMediaItem>,
-    serverUrl: String?,
     isLoadingMore: Boolean = false,
     hasMore: Boolean = true,
-    isRowMode: Boolean = false,
+    viewMode: ViewMode = ViewMode.GRID,
     onNavigateClick: (AppMediaItem) -> Unit,
-    onPlayClick: ((AppMediaItem, QueueOption, Boolean) -> Unit),
+    onPlayClick: PlayHandler<AppMediaItem>,
     onLoadMore: () -> Unit = {},
     gridState: LazyGridState = rememberLazyGridState(),
-    playlistActions: ActionsViewModel.PlaylistActions,
-    libraryActions: ActionsViewModel.LibraryActions,
-    progressActions: ActionsViewModel.ProgressActions? = null,
+    playlistActions: PlaylistActions,
+    libraryActions: LibraryActions,
+    progressActions: ProgressActions? = null,
+    contentPadding: PaddingValues,
+    albumSubtitle: AlbumSubtitle = AlbumSubtitle.ARTISTS,
 ) {
+    val isRow = viewMode == ViewMode.LIST
+    val itemKeys = remember(items) { items.lazyListOccurrenceKeys() }
+
+    // derivedStateOf tracks only State reads; plain parameters would stay at their first values.
+    val currentHasMore by rememberUpdatedState(hasMore)
+    val currentIsLoadingMore by rememberUpdatedState(isLoadingMore)
+
     // Detect when we're near the end and trigger load more
     val shouldLoadMore by remember {
         derivedStateOf {
@@ -56,7 +89,7 @@ fun AdaptiveMediaGrid(
             val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
 
             // Load more when we're within 10 items of the end
-            hasMore && !isLoadingMore && totalItems > 0 && lastVisibleItem >= totalItems - 10
+            currentHasMore && !currentIsLoadingMore && totalItems > 0 && lastVisibleItem >= totalItems - 10
         }
     }
 
@@ -69,110 +102,137 @@ fun AdaptiveMediaGrid(
     LazyVerticalGrid(
         modifier = modifier,
         state = gridState,
-        columns = GridCells.Adaptive(minSize = 96.dp),
-        contentPadding = PaddingValues(8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        columns = GridCells.Adaptive(minSize = gridItemMinSize()),
+        contentPadding = contentPadding + PaddingValues(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        items(
+        itemsIndexed(
             items = items,
-            key = { it.itemId },
-            span = if (isRowMode) {
-                { GridItemSpan(maxLineSpan) }
-            } else null
-        ) { item ->
-            val rowModifier = if (isRowMode) Modifier.fillMaxWidth() else Modifier
+            key = { index, _ -> itemKeys[index] },
+            span = if (isRow) {
+                { _, _ -> GridItemSpan(maxLineSpan) }
+            } else {
+                null
+            },
+        ) { _, item ->
             when (item) {
-                is AppMediaItem.Artist -> ArtistWithMenu(
+                is Artist -> ArtistWithMenu(
                     item = item,
-                    rowMode = isRowMode,
-                    showSubtitle = true,
-                    serverUrl = serverUrl,
+                    viewMode = viewMode,
                     onNavigateClick = onNavigateClick,
                     onPlayOption = onPlayClick,
                     libraryActions = libraryActions,
-                    providerIconFetcher = null
+                    providerIconFetcher = null,
                 )
 
-                is AppMediaItem.Album -> AlbumWithMenu(
+                is Album -> AlbumWithMenu(
                     item = item,
-                    rowMode = isRowMode,
-                    showSubtitle = true,
-                    serverUrl = serverUrl,
+                    viewMode = viewMode,
                     onNavigateClick = onNavigateClick,
-                    onPlayOption = onPlayClick,
-                    libraryActions = libraryActions,
-                    providerIconFetcher = null
-                )
-
-                is AppMediaItem.Playlist -> PlaylistWithMenu(
-                    item = item,
-                    rowMode = isRowMode,
-                    showSubtitle = true,
-                    serverUrl = serverUrl,
-                    onNavigateClick = onNavigateClick,
-                    onPlayOption = onPlayClick,
-                    libraryActions = libraryActions,
-                    providerIconFetcher = null
-                )
-
-                is AppMediaItem.Podcast -> PodcastWithMenu(
-                    item = item,
-                    rowMode = isRowMode,
-                    showSubtitle = true,
-                    serverUrl = serverUrl,
-                    onNavigateClick = onNavigateClick,
-                    onPlayOption = onPlayClick,
-                    libraryActions = libraryActions,
-                    providerIconFetcher = null
-                )
-
-                is AppMediaItem.Track -> TrackWithMenu(
-                    item = item,
-                    rowMode = isRowMode,
-                    serverUrl = serverUrl,
+                    navigateToItem = onNavigateClick,
                     onPlayOption = onPlayClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
-                    providerIconFetcher = null
+                    providerIconFetcher = null,
+                    subtitle = albumSubtitle,
                 )
 
-                is AppMediaItem.PodcastEpisode -> PodcastEpisodeWithMenu(
+                is Playlist -> PlaylistWithMenu(
                     item = item,
-                    rowMode = isRowMode,
-                    serverUrl = serverUrl,
+                    viewMode = viewMode,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                is Podcast -> PodcastWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                is Track -> TrackWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    navigateToItem = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    playlistActions = playlistActions,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                is PodcastEpisode -> PodcastEpisodeWithMenu(
+                    item = item,
+                    viewMode = viewMode,
                     onPlayOption = onPlayClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
                     progressActions = progressActions,
-                    providerIconFetcher = null
+                    providerIconFetcher = null,
                 )
 
-                is AppMediaItem.Audiobook -> AudiobookWithMenu(
+                is Audiobook -> AudiobookWithMenu(
                     item = item,
-                    rowMode = isRowMode,
-                    showSubtitle = true,
-                    serverUrl = serverUrl,
+                    viewMode = viewMode,
                     onNavigateClick = onNavigateClick,
-                    onPlayOption = onPlayClick,
-                    libraryActions = libraryActions,
-                    progressActions = progressActions,
-                    providerIconFetcher = null
-                )
-
-                is AppMediaItem.RadioStation -> RadioWithMenu(
-                    item = item,
-                    rowMode = isRowMode,
-                    serverUrl = serverUrl,
                     onPlayOption = onPlayClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
-                    providerIconFetcher = null
+                    progressActions = progressActions,
+                    providerIconFetcher = null,
                 )
 
-                else -> {
-                    // Unsupported item type - skip
-                }
+                is Genre -> GenreWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                is RadioStation -> RadioWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onPlayOption = onPlayClick,
+                    playlistActions = playlistActions,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                is MediaCollection -> MediaCollectionWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                )
+
+                is RecommendationFolder -> FolderWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                )
+
+                is AudioSource -> AudioSourceWithMenu(
+                    item = item,
+                    viewMode = viewMode,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
+                    providerIconFetcher = null,
+                )
+
+                // Reaches the client only as a queue item (an AI Radio host clip), never
+                // through a library list, a search result or a browse folder. Named rather
+                // than folded into an `else` so a genuinely new media type still fails here.
+                is SoundEffect -> Unit
             }
         }
 
@@ -183,7 +243,7 @@ fun AdaptiveMediaGrid(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.Center,
                 ) {
                     CircularProgressIndicator()
                 }

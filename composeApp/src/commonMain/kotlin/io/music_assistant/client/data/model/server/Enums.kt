@@ -4,18 +4,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class PlayerType {
-    @SerialName("player")
-    PLAYER,
-
-    @SerialName("group")
-    GROUP,
-
-    @SerialName("stereo_pair")
-    STEREO_PAIR
-}
-
-@Serializable
 enum class PlayerState {
     @SerialName("idle")
     IDLE,
@@ -24,37 +12,23 @@ enum class PlayerState {
     PAUSED,
 
     @SerialName("playing")
-    PLAYING
+    PLAYING,
 }
 
-@Serializable
-enum class RepeatMode {
-    @SerialName("off")
-    OFF,
-
-    @SerialName("one")
-    ONE,
-
-    @SerialName("all")
-    ALL
-}
-
-class PlayerFeature {
-    companion object {
-        const val POWER = "power"
-        const val VOLUME_SET = "volume_set"
-        const val VOLUME_MUTE = "volume_mute"
-        const val PAUSE = "pause"
-        const val SET_MEMBERS = "set_members"
-        const val MULTI_DEVICE_DSP = "multi_device_dsp"
-        const val SEEK = "seek"
-        const val NEXT_PREVIOUS = "next_previous"
-        const val PLAY_ANNOUNCEMENT = "play_announcement"
-        const val ENQUEUE = "enqueue"
-        const val GAPLESS_PLAYBACK = "gapless_playback"
-        const val GAPLESS_DIFFERENT_SAMPLERATE = "gapless_different_samplerate"
-        const val SELECT_SOURCE = "select_source"
-    }
+object PlayerFeature {
+    const val POWER = "power"
+    const val VOLUME_SET = "volume_set"
+    const val VOLUME_MUTE = "volume_mute"
+    const val PAUSE = "pause"
+    const val SET_MEMBERS = "set_members"
+    const val MULTI_DEVICE_DSP = "multi_device_dsp"
+    const val SEEK = "seek"
+    const val NEXT_PREVIOUS = "next_previous"
+    const val PLAY_ANNOUNCEMENT = "play_announcement"
+    const val ENQUEUE = "enqueue"
+    const val GAPLESS_PLAYBACK = "gapless_playback"
+    const val GAPLESS_DIFFERENT_SAMPLERATE = "gapless_different_samplerate"
+    const val SELECT_SOURCE = "select_source"
 }
 
 @Serializable
@@ -71,6 +45,12 @@ enum class EventType {
     @SerialName("player_settings_updated")
     PLAYER_SETTINGS_UPDATED,
 
+    // Redundant for state: the server also calls `update_state()` on every timer
+    // change, so `PLAYER_UPDATED` carries `sleep_timer_expires_at`. Listed only so
+    // the event decoder ignores it quietly instead of logging an unknown type.
+    @SerialName("player_sleep_timer_updated")
+    PLAYER_SLEEP_TIMER_UPDATED,
+
     @SerialName("queue_added")
     QUEUE_ADDED,
 
@@ -83,11 +63,16 @@ enum class EventType {
     @SerialName("queue_time_updated")
     QUEUE_TIME_UPDATED,
 
+    // Declared by the models package, but no server version sends it: a change of the
+    // queue settings comes in `QUEUE_UPDATED`.
     @SerialName("queue_settings_updated")
     QUEUE_SETTINGS_UPDATED,
 
     @SerialName("application_shutdown")
     SHUTDOWN,
+
+    @SerialName("core_state_updated")
+    CORE_STATE_UPDATED,
 
     @SerialName("media_item_added")
     MEDIA_ITEM_ADDED,
@@ -101,14 +86,38 @@ enum class EventType {
     @SerialName("media_item_played")
     MEDIA_ITEM_PLAYED,
 
+    @SerialName("playlog_updated")
+    PLAYLOG_UPDATED,
+
+    @SerialName("favorite_updated")
+    FAVORITE_UPDATED,
+
     @SerialName("providers_updated")
     PROVIDERS_UPDATED,
+
+    @SerialName("provider_event")
+    PROVIDER_EVENT,
 
     @SerialName("player_config_updated")
     PLAYER_CONFIG_UPDATED,
 
+    @SerialName("player_dsp_config_updated")
+    PLAYER_DSP_CONFIG_UPDATED,
+
+    @SerialName("player_options_updated")
+    PLAYER_OPTIONS_UPDATED,
+
+    @SerialName("dsp_presets_updated")
+    DSP_PRESETS_UPDATED,
+
     @SerialName("sync_tasks_updated")
     SYNC_TASKS_UPDATED,
+
+    @SerialName("tasks_updated")
+    TASKS_UPDATED,
+
+    @SerialName("music_sync_completed")
+    MUSIC_SYNC_COMPLETED,
 
     @SerialName("auth_session")
     AUTH_SESSION,
@@ -120,28 +129,5 @@ enum class EventType {
     DISCONNECTED,
 
     @SerialName("*")
-    ALL
-}
-
-//enum class AlbumType {
-//    @SerialName("album") ALBUM,
-//    @SerialName("single") SINGLE,
-//    @SerialName("compilation") COMPILATION,
-//    @SerialName("ep") EP,
-//    @SerialName("unknown") UNKNOWN,
-//}
-
-enum class QueueOption {
-    @SerialName("play")
-    PLAY,
-
-    @SerialName("replace")
-    REPLACE,
-
-    @SerialName("next")
-    NEXT,
-
-    //@SerialName("replace_next") REPLACE_NEXT,
-    @SerialName("add")
-    ADD,
+    ALL,
 }

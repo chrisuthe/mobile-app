@@ -6,36 +6,47 @@ import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.receiveDeserialized
 import io.ktor.client.plugins.websocket.sendSerialized
 import io.ktor.client.plugins.websocket.ws
-import io.ktor.client.plugins.websocket.wss
-import io.ktor.http.HttpMethod
 import io.ktor.websocket.close
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
-
-private fun backoffMs(attempt: Int): Long = when (attempt) {
-    0 -> 0L
-    1 -> 500L
-    2 -> 1000L
-    3 -> 2000L
-    else -> 3000L
-}
+import kotlin.concurrent.Volatile
 
 class DirectTransport(
-    private val client: HttpClient,
+    private val clientProvider: () -> HttpClient,
     private val connectionInfoProvider: () -> ConnectionInfo,
-    private val scope: CoroutineScope,
-    private val maxReconnectAttempts: Int = 5
+    parentScope: CoroutineScope,
+    private val networkAvailable: StateFlow<Boolean>? = null,
 ) : Transport {
-
     private val logger = Logger.withTag("DirectTransport")
+
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        logger.e(throwable) { "Uncaught exception in DirectTransport scope" }
+        when (_state.value) {
+            TransportState.Connected -> disconnect()
+            TransportState.Connecting, is TransportState.Reconnecting ->
+                _state.value = TransportState.Failed(
+                    Exception("Recovery machinery died: ${throwable.message}", throwable),
+                )
+            TransportState.Disconnected, is TransportState.Failed -> Unit
+        }
+    }
+
+    private val scope: CoroutineScope = CoroutineScope(
+        parentScope.coroutineContext +
+            SupervisorJob(parentScope.coroutineContext[Job]) +
+            exceptionHandler,
+    )
 
     private val _state = MutableStateFlow<TransportState>(TransportState.Disconnected)
     override val state = _state.asStateFlow()
@@ -44,8 +55,13 @@ class DirectTransport(
     override val messages = _messages.asSharedFlow()
 
     private var connectionJob: Job? = null
+
+    @Volatile
     private var session: DefaultClientWebSocketSession? = null
     private var wasConnected = false
+
+    @Volatile
+    private var messageCounter = 0L
 
     override fun connect() {
         connectionJob?.cancel()
@@ -54,6 +70,8 @@ class DirectTransport(
             _state.value = TransportState.Connecting
             try {
                 openWebSocket(connectionInfoProvider())
+                // Returned normally = was connected, then connection dropped
+                if (wasConnected) startReconnection()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 if (!wasConnected) {
@@ -66,49 +84,64 @@ class DirectTransport(
         }
     }
 
-    private suspend fun openWebSocket(info: ConnectionInfo) {
+    private suspend fun openWebSocket(
+        info: ConnectionInfo,
+        onConnected: () -> Unit = {},
+    ) {
         val block: suspend DefaultClientWebSocketSession.() -> Unit = {
             session = this
             wasConnected = true
             _state.value = TransportState.Connected
+            onConnected()
             try {
                 while (true) {
                     val message: JsonObject = receiveDeserialized()
+                    messageCounter++
                     _messages.emit(message)
                 }
-            } catch (e: ClosedReceiveChannelException) {
-                logger.d { "WebSocket connection closed" }
+            } catch (@Suppress("SwallowedException") e: ClosedReceiveChannelException) {
+                // Expected on graceful close — the channel-closed exception type IS the signal.
+                logger.i { "WebSocket connection closed" }
             } finally {
                 session = null
             }
         }
-        if (info.isTls) {
-            client.wss(HttpMethod.Get, info.host, info.port, "/ws", block = block)
-        } else {
-            client.ws(HttpMethod.Get, info.host, info.port, "/ws", block = block)
-        }
-        // Block returned = connection dropped. If wasConnected, auto-reconnect.
-        if (wasConnected) startReconnection()
+        // Scheme, host, port and any reverse-proxy base path all live in `wsUrl`.
+        clientProvider().ws(urlString = "${info.wsUrl}/ws", block = block)
     }
 
     private suspend fun startReconnection() {
-        for (attempt in 0 until maxReconnectAttempts) {
-            _state.value = TransportState.Reconnecting(attempt + 1)
-            delay(backoffMs(attempt))
-            try {
-                logger.i { "Reconnect attempt ${attempt + 1}/$maxReconnectAttempts" }
-                openWebSocket(connectionInfoProvider())
-                return // openWebSocket stayed alive then dropped again — loop re-entered via recursive startReconnection
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                logger.w { "Reconnect attempt ${attempt + 1} failed: ${e.message}" }
+        // Outer loop: each successful-then-dropped connection gets a fresh attempt cycle.
+        while (true) {
+            val reconnected = runReconnectionLoop(
+                maxAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+                networkAvailable = networkAvailable,
+                onAttemptStarting = { _state.value = TransportState.Reconnecting(it) },
+                tryConnect = { attempt ->
+                    var connectedThisAttempt = false
+                    try {
+                        logger.i { "Reconnect attempt $attempt" }
+                        openWebSocket(connectionInfoProvider()) { connectedThisAttempt = true }
+                        // Returned normally = was connected, then dropped — signal success for fresh cycle
+                        true
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                        logger.w { "Reconnect attempt $attempt failed: ${e.message}" }
+                        // If we reached Connected during this attempt, treat the drop as a
+                        // fresh-cycle trigger so the next reconnect starts at attempt 0.
+                        connectedThisAttempt
+                    }
+                },
+            )
+            if (!reconnected) {
+                _state.value = TransportState.Failed(Exception("Max reconnect attempts reached"))
+                return
             }
+            // Was reconnected but connection dropped again — start fresh cycle
         }
-        _state.value = TransportState.Failed(Exception("Max reconnect attempts reached"))
     }
 
     override suspend fun send(message: JsonObject) {
-        val s = session ?: throw IllegalStateException("Not connected")
+        val s = session ?: error("Not connected")
         s.sendSerialized(message)
     }
 
@@ -121,5 +154,9 @@ class DirectTransport(
             scope.launch { s.close() }
         }
         _state.value = TransportState.Disconnected
+    }
+
+    override fun close() {
+        scope.cancel()
     }
 }

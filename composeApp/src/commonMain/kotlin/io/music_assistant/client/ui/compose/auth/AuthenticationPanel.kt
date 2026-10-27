@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
@@ -27,6 +28,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -37,20 +41,32 @@ import co.touchlab.kermit.Logger
 import io.music_assistant.client.auth.AuthState
 import io.music_assistant.client.data.model.server.AuthProvider
 import io.music_assistant.client.data.model.server.User
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.auth_authenticating
+import musicassistantclient.composeapp.generated.resources.auth_authorize_ha
+import musicassistantclient.composeapp.generated.resources.auth_hide_password
+import musicassistantclient.composeapp.generated.resources.auth_loading_providers
+import musicassistantclient.composeapp.generated.resources.auth_logged_in_as
+import musicassistantclient.composeapp.generated.resources.auth_login
+import musicassistantclient.composeapp.generated.resources.auth_logout
+import musicassistantclient.composeapp.generated.resources.auth_password
+import musicassistantclient.composeapp.generated.resources.auth_retry_providers
+import musicassistantclient.composeapp.generated.resources.auth_show_password
+import musicassistantclient.composeapp.generated.resources.auth_username
+import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 
 @Composable
 fun AuthenticationPanel(
     viewModel: AuthenticationViewModel = koinViewModel(),
     modifier: Modifier = Modifier,
-    user: User?
+    user: User?,
 ) {
     val providers by viewModel.providers.collectAsStateWithLifecycle()
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     var loginError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(authState) {
-        Logger.e("State $authState")
         if (authState is AuthState.Error) {
             loginError = (authState as? AuthState.Error)?.message
         } else if (authState is AuthState.Authenticated) {
@@ -61,17 +77,17 @@ fun AuthenticationPanel(
     Column(modifier = modifier.fillMaxWidth()) {
         user?.let {
             Text(
-                text = "Logged in as ${user.description}",
+                text = stringResource(Res.string.auth_logged_in_as, user.description),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(bottom = 12.dp),
             )
 
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
-                onClick = { viewModel.logout() }
+                onClick = { viewModel.logout() },
             ) {
-                Text("Logout")
+                Text(stringResource(Res.string.auth_logout))
             }
         } ?: run {
             // Show provider selection and auth UI
@@ -79,7 +95,7 @@ fun AuthenticationPanel(
                 var selectedTab by remember(key1 = providers) { mutableIntStateOf(0) }
                 // Provider tabs
                 PrimaryTabRow(
-                    selectedTabIndex = selectedTab
+                    selectedTabIndex = selectedTab,
                 ) {
                     providers.forEachIndexed { index, provider ->
                         when (provider.type) {
@@ -88,7 +104,7 @@ fun AuthenticationPanel(
                                 onClick = { selectedTab = index },
                                 text = {
                                     Text("Music Assistant")
-                                }
+                                },
                             )
 
                             "homeassistant" -> Tab(
@@ -96,7 +112,7 @@ fun AuthenticationPanel(
                                 onClick = { selectedTab = index },
                                 text = {
                                     Text("Home Assistant")
-                                }
+                                },
                             )
 
                             else -> Unit
@@ -113,9 +129,9 @@ fun AuthenticationPanel(
                         "homeassistant" -> Button(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { viewModel.login(provider) },
-                            enabled = authState !is AuthState.Loading
+                            enabled = authState !is AuthState.Loading,
                         ) {
-                            Text("Authorize with Home Assistant")
+                            Text(stringResource(Res.string.auth_authorize_ha))
                         }
 
                         else -> Unit
@@ -125,14 +141,14 @@ fun AuthenticationPanel(
                 // No providers loaded yet - show loading or retry
                 Text(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    text = "Loading authentication providers...",
-                    textAlign = TextAlign.Center
+                    text = stringResource(Res.string.auth_loading_providers),
+                    textAlign = TextAlign.Center,
                 )
                 Button(
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = { viewModel.loadProviders() }
+                    onClick = { viewModel.loadProviders() },
                 ) {
-                    Text("Retry Loading Providers")
+                    Text(stringResource(Res.string.auth_retry_providers))
                 }
             }
 
@@ -141,8 +157,8 @@ fun AuthenticationPanel(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     modifier = Modifier.fillMaxWidth(),
-                    text = "Authenticating...",
-                    textAlign = TextAlign.Center
+                    text = stringResource(Res.string.auth_authenticating),
+                    textAlign = TextAlign.Center,
                 )
             }
         }
@@ -154,7 +170,7 @@ fun AuthenticationPanel(
                 modifier = Modifier.fillMaxWidth(),
                 text = it,
                 color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -165,56 +181,75 @@ private fun BuiltinAuthForm(viewModel: AuthenticationViewModel, provider: AuthPr
     val username by viewModel.username.collectAsStateWithLifecycle()
     val password by viewModel.password.collectAsStateWithLifecycle()
     var isPasswordVisible by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
 
     Column {
         TextField(
             modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             value = username,
             onValueChange = { viewModel.username.value = it },
-            label = { Text("Username") },
+            label = { Text(stringResource(Res.string.auth_username)) },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) },
+            ),
             colors = TextFieldDefaults.colors(
                 focusedTextColor = MaterialTheme.colorScheme.onBackground,
                 unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-            )
+            ),
         )
 
         TextField(
             modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
             value = password,
             onValueChange = { viewModel.password.value = it },
-            label = { Text("Password") },
-            visualTransformation = if (isPasswordVisible)
+            label = { Text(stringResource(Res.string.auth_password)) },
+            visualTransformation = if (isPasswordVisible) {
                 VisualTransformation.None
-            else
-                PasswordVisualTransformation(),
+            } else {
+                PasswordVisualTransformation()
+            },
             trailingIcon = {
-                val icon = if (isPasswordVisible)
+                val icon = if (isPasswordVisible) {
                     Icons.Filled.VisibilityOff
-                else
+                } else {
                     Icons.Filled.Visibility
-                val description = if (isPasswordVisible)
-                    "Hide password"
-                else
-                    "Show password"
+                }
+                val description = if (isPasswordVisible) {
+                    stringResource(Res.string.auth_hide_password)
+                } else {
+                    stringResource(Res.string.auth_show_password)
+                }
                 IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
                     Icon(imageVector = icon, contentDescription = description)
                 }
             },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    focusManager.clearFocus()
+                    if (username.isNotEmpty() && password.isNotEmpty()) {
+                        viewModel.login(provider)
+                    }
+                },
+            ),
             colors = TextFieldDefaults.colors(
                 focusedTextColor = MaterialTheme.colorScheme.onBackground,
                 unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-            )
+            ),
         )
 
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = { viewModel.login(provider) },
-            enabled = username.isNotEmpty() && password.isNotEmpty()
+            enabled = username.isNotEmpty() && password.isNotEmpty(),
         ) {
-            Text("Login")
+            Text(stringResource(Res.string.auth_login))
         }
     }
 }

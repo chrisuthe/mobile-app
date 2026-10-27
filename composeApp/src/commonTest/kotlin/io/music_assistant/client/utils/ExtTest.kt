@@ -1,9 +1,9 @@
 package io.music_assistant.client.utils
 
 import kotlin.test.Test
-import kotlin.test.assertTrue
-import kotlin.test.assertFalse
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -22,7 +22,7 @@ class ExtTest {
             "example.com",
             "sub.domain.co.uk",
             "my-server",
-            "a123-b456"
+            "a123-b456",
         )
         for (host in validHosts) {
             assertTrue(host.isValidHost(), "Expected $host to be recognised as a valid host")
@@ -49,7 +49,7 @@ class ExtTest {
             "endingdot.",
             "toolonglabeltoolonglabeltoolonglabeltoolonglabeltoolonglabeltoolonglabeltoolonglabeltoolonglabel.com",
             "has space.com",
-            "invalid_underscore.com"
+            "invalid_underscore.com",
         )
         for (host in invalidHosts) {
             assertFalse(host.isValidHost(), "Expected $host to be recognised as an invalid host")
@@ -73,10 +73,27 @@ class ExtTest {
     }
 
     @Test
+    fun testValidBasePaths() {
+        val valid = listOf("", "   ", "/", "/ma", "ma", "/ma/", "/a/b", "a/b/c", "/music-assistant", "/v1.0")
+        for (path in valid) {
+            assertTrue(path.isValidBasePath(), "Expected '$path' to be recognised as a valid base path")
+        }
+    }
+
+    @Test
+    fun testInvalidBasePaths() {
+        val invalid = listOf("/ma//b", "/ma?x=1", "http://x/ma", "/ma b", "/ma#frag")
+        for (path in invalid) {
+            assertFalse(path.isValidBasePath(), "Expected '$path' to be recognised as an invalid base path")
+        }
+    }
+
+    @Test
     fun testToMinSec() {
-        assertEquals("1:05", 65.seconds.formatDuration())
-        assertEquals("0:00", 0.seconds.formatDuration())
+        assertEquals("01:05", 65.seconds.formatDuration())
+        assertEquals("00:00", 0.seconds.formatDuration())
         assertEquals("--:--", (null as Duration?).formatDuration())
         assertEquals("10:00", Duration.parse("600s").formatDuration())
+        assertEquals("6:10:00", Duration.parse("22200s").formatDuration())
     }
 }

@@ -1,12 +1,15 @@
+// Reconnection delay constants inline-documented at use site.
+@file:Suppress("MagicNumber")
+
 package io.music_assistant.client.webrtc
 
 import co.touchlab.kermit.Logger
-import com.shepeliev.webrtckmp.DataChannelState
 import io.music_assistant.client.webrtc.model.PeerConnectionStateValue
 import io.music_assistant.client.webrtc.model.RemoteId
 import io.music_assistant.client.webrtc.model.SignalingMessage
 import io.music_assistant.client.webrtc.model.WebRTCConnectionState
 import io.music_assistant.client.webrtc.model.WebRTCError
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -16,9 +19,12 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Manages WebRTC connection lifecycle and orchestrates signaling + peer connection.
@@ -66,14 +72,16 @@ import kotlinx.coroutines.sync.withLock
  */
 class WebRTCConnectionManager(
     private val signalingClient: SignalingClient,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
 ) {
+    val diagnostics: WebRTCDiagnostics = signalingClient.diagnostics
     private val logger = Logger.withTag("WebRTCConnectionManager")
     private val mutex = Mutex()
 
     private var peerConnection: PeerConnectionWrapper? = null
     private var dataChannel: DataChannelWrapper? = null
     private var sendspinDataChannelInternal: DataChannelWrapper? = null
+    private var httpProxyDataChannelInternal: DataChannelWrapper? = null
     private var signalingMessageListenerJob: Job? = null
     private var iceCandidateJob: Job? = null
     private var dataChannelListenerJob: Job? = null
@@ -81,6 +89,7 @@ class WebRTCConnectionManager(
     private var messageListenerJob: Job? = null
     private var dataChannelStateJob: Job? = null
     private var connectionTimeoutJob: Job? = null
+    private var iceDisconnectGraceJob: Job? = null
     private var currentSessionId: String? = null
     private var currentRemoteId: RemoteId? = null
 
@@ -92,12 +101,62 @@ class WebRTCConnectionManager(
     val incomingMessages: SharedFlow<String> = _incomingMessages.asSharedFlow()
 
     /**
-     * Sendspin data channel for audio streaming.
-     * Created during SDP negotiation, cannot be recreated dynamically.
-     * Null when not connected via WebRTC.
+     * Sendspin data channel for audio streaming, created with the offer.
+     * A later one opens in-band through [openDataChannel]. Null when not connected via WebRTC.
      */
     val sendspinDataChannel: DataChannelWrapper?
         get() = sendspinDataChannelInternal
+
+    /**
+     * Opens the dedicated image channel, on which the server answers proxied HTTP requests
+     * (album art, previews) so they stop queueing ahead of API traffic on `ma-api`.
+     *
+     * Opened on demand rather than before the offer, because a server older than schema 49
+     * mistakes an unknown channel label for the API channel and drops the whole remote
+     * session. Callers must therefore gate on the schema version first. No SDP
+     * renegotiation is involved: `m=application` already exists from `ma-api`, so the new
+     * channel is signalled in-band.
+     *
+     * Idempotent — returns the live channel if one is already open, null if it cannot be
+     * opened (the `ma-api` proxy path remains a working fallback).
+     */
+    suspend fun openHttpProxyChannel(): DataChannelWrapper? {
+        httpProxyDataChannelInternal?.let { return it }
+        val pc = peerConnection ?: return null
+        val channel = pc.createDataChannel(label = HTTP_PROXY_CHANNEL_LABEL, ordered = true)
+        httpProxyDataChannelInternal = channel
+        val opened = withTimeoutOrNull(CHANNEL_OPEN_TIMEOUT_MS) {
+            channel.state.first { it == DataChannelState.Open }
+        }
+        if (opened == null) {
+            logger.w { "http_proxy channel did not open within ${CHANNEL_OPEN_TIMEOUT_MS}ms" }
+            channel.close()
+            httpProxyDataChannelInternal = null
+            return null
+        }
+        logger.i { "http_proxy data channel ready for use" }
+        return channel
+    }
+
+    /**
+     * Opens a channel for [label] on the live peer connection, signalled in-band like
+     * [openHttpProxyChannel]. The server must know the label, so callers gate on the schema
+     * version first. The caller owns the channel and closes it. Null when there is no peer
+     * connection or the channel does not open in time.
+     */
+    suspend fun openDataChannel(label: String): DataChannelWrapper? {
+        val pc = peerConnection ?: return null
+        val channel = pc.createDataChannel(label = label, ordered = true)
+        val opened = withTimeoutOrNull(CHANNEL_OPEN_TIMEOUT_MS) {
+            channel.state.first { it == DataChannelState.Open }
+        }
+        if (opened == null) {
+            logger.w { "$label channel did not open within ${CHANNEL_OPEN_TIMEOUT_MS}ms" }
+            channel.close()
+            return null
+        }
+        return channel
+    }
 
     /**
      * Connect to Music Assistant server via WebRTC.
@@ -112,7 +171,7 @@ class WebRTCConnectionManager(
             return@withLock
         }
 
-        logger.i { "Starting WebRTC connection to Remote ID: $remoteId" }
+        diagnostics.event("manager connect started")
         currentRemoteId = remoteId
         _connectionState.value = WebRTCConnectionState.ConnectingToSignaling
 
@@ -126,16 +185,16 @@ class WebRTCConnectionManager(
             // Step 3: Send ConnectRequest message
             logger.d { "Sending ConnectRequest message" }
             signalingClient.sendMessage(SignalingMessage.ConnectRequest(remoteId = remoteId.rawId))
+            diagnostics.event("connect request sent; waiting for signaling Connected")
 
             // Step 4: Start timeout timer (30s like web client)
             startConnectionTimeout()
 
             // Subsequent steps handled in signaling message handlers
-
         } catch (e: Exception) {
-            logger.e(e) { "Failed to connect to signaling server" }
+            diagnostics.failure("manager signaling setup failed", e)
             _connectionState.value = WebRTCConnectionState.Error(
-                WebRTCError.SignalingError("Failed to connect to signaling server", e)
+                WebRTCError.SignalingError("Failed to connect to signaling server", e),
             )
             cleanup()
         }
@@ -176,14 +235,15 @@ class WebRTCConnectionManager(
      * Handle incoming signaling messages.
      */
     private suspend fun handleSignalingMessage(message: SignalingMessage) {
-        logger.d { "Received signaling message: ${message.type}" }
+        // Local class name, not message.type — the wire type string is remote text.
+        diagnostics.event("signaling message dispatched type=${message::class.simpleName}")
 
         when (message) {
             is SignalingMessage.Connected -> handleConnected(message)
             is SignalingMessage.Answer -> handleAnswer(message)
             is SignalingMessage.IceCandidate -> handleIceCandidate(message)
             is SignalingMessage.Error -> handleSignalingError(message)
-            is SignalingMessage.PeerDisconnected -> handlePeerDisconnected(message)
+            is SignalingMessage.PeerDisconnected -> handlePeerDisconnected()
             is SignalingMessage.Unknown -> logger.w { "Received unknown message type: ${message.type}" }
             else -> logger.d { "Ignoring message type: ${message.type}" }
         }
@@ -196,9 +256,9 @@ class WebRTCConnectionManager(
         connectionTimeoutJob = scope.launch {
             delay(30_000) // 30 seconds
             if (_connectionState.value !is WebRTCConnectionState.Connected) {
-                logger.e { "Connection timeout: failed to establish WebRTC connection within 30s" }
+                diagnostics.event("setup timeout fired after 30000ms managerState=${_connectionState.value::class.simpleName}")
                 _connectionState.value = WebRTCConnectionState.Error(
-                    WebRTCError.ConnectionError("Connection timeout")
+                    WebRTCError.ConnectionError("Connection timeout"),
                 )
                 cleanup()
             }
@@ -209,10 +269,13 @@ class WebRTCConnectionManager(
      * Handle Connected: Initialize peer connection and create offer.
      */
     private suspend fun handleConnected(message: SignalingMessage.Connected) {
-        logger.i { "Connected. Session ID: ${message.sessionId}, ICE servers: ${message.iceServers.size}" }
+        diagnostics.event("signaling Connected received iceServers=${message.iceServers.size}; setup timeout cancelled")
+        val remoteId = checkNotNull(currentRemoteId) {
+            "Missing remote ID for WebRTC connection"
+        }
         currentSessionId = message.sessionId
         _connectionState.value =
-            WebRTCConnectionState.NegotiatingPeerConnection(message.sessionId ?: "")
+            WebRTCConnectionState.NegotiatingPeerConnection(message.sessionId.orEmpty())
 
         // Cancel timeout - we got the connected message
         connectionTimeoutJob?.cancel()
@@ -220,7 +283,7 @@ class WebRTCConnectionManager(
 
         try {
             // Create peer connection (no callbacks needed with flow-based API)
-            val pc = PeerConnectionWrapper()
+            val pc = PeerConnectionWrapper(diagnostics)
             peerConnection = pc
 
             // Initialize with ICE servers
@@ -234,12 +297,14 @@ class WebRTCConnectionManager(
                         logger.d { "ICE candidate gathered, sending to signaling server" }
                         signalingClient.sendMessage(
                             SignalingMessage.IceCandidate(
-                                remoteId = currentRemoteId!!.rawId,
-                                sessionId = message.sessionId ?: "",
-                                data = candidate
-                            )
+                                remoteId = remoteId.rawId,
+                                sessionId = message.sessionId.orEmpty(),
+                                data = candidate,
+                            ),
                         )
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.e(e) { "Error collecting ICE candidates" }
                 }
@@ -249,13 +314,15 @@ class WebRTCConnectionManager(
             dataChannelListenerJob = scope.launch {
                 try {
                     pc.dataChannels.collect { channel ->
-                        logger.i { "Remote data channel received: ${channel.label}" }
+                        diagnostics.event("manager received remote channel label=${safeChannelLabel(channel.label)}")
                         // If server creates "ma-api" channel, use it (replaces client-created one)
                         if (channel.label == "ma-api") {
                             logger.i { "Server created ma-api channel - using it for communication" }
-                            setupDataChannel(channel, message.sessionId ?: "")
+                            setupDataChannel(channel, message.sessionId.orEmpty(), remoteId)
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.e(e) { "Error collecting data channels" }
                 }
@@ -268,38 +335,69 @@ class WebRTCConnectionManager(
                         logger.d { "Peer connection state: $state" }
                         when (state) {
                             PeerConnectionStateValue.FAILED -> {
+                                // Terminal: cancel any pending grace timer and fail immediately.
+                                iceDisconnectGraceJob?.cancel()
+                                iceDisconnectGraceJob = null
                                 logger.e { "ICE connection failed" }
                                 _connectionState.value = WebRTCConnectionState.Error(
-                                    WebRTCError.ConnectionError("ICE connection failed")
+                                    WebRTCError.ConnectionError("ICE connection failed"),
                                 )
                                 cleanup()
                             }
 
                             PeerConnectionStateValue.DISCONNECTED -> {
-                                logger.w { "ICE connection disconnected" }
-                                // Treat disconnected as immediate failure to enable fast reconnection
-                                // Even if temporary, reconnection will succeed quickly
-                                _connectionState.value = WebRTCConnectionState.Error(
-                                    WebRTCError.ConnectionError("ICE connection disconnected")
-                                )
-                                cleanup()
+                                // libwebrtc routinely flips connected ↔ disconnected during brief
+                                // network noise. Give it a grace window to recover instead of
+                                // tearing down on every blip — a full SDP renegotiation + re-auth
+                                // is far more disruptive than ~4 s of un-noticed downtime.
+                                if (iceDisconnectGraceJob?.isActive == true) return@collect
+                                logger.w { "ICE connection disconnected — waiting ${ICE_DISCONNECT_GRACE_MS}ms for recovery" }
+                                iceDisconnectGraceJob = scope.launch {
+                                    delay(ICE_DISCONNECT_GRACE_MS)
+                                    // Re-check the live state on the wrapper, not on a captured value —
+                                    // the collector may not have re-emitted CONNECTED yet at the cancel
+                                    // edge, but the wrapper's flow value is authoritative.
+                                    val current = pc.connectionState.value
+                                    if (current == PeerConnectionStateValue.CONNECTED) {
+                                        logger.i { "ICE recovered during grace window" }
+                                    } else {
+                                        logger.e { "ICE still $current after grace window — failing" }
+                                        _connectionState.value = WebRTCConnectionState.Error(
+                                            WebRTCError.ConnectionError("ICE connection disconnected"),
+                                        )
+                                        cleanup()
+                                    }
+                                }
+                            }
+
+                            PeerConnectionStateValue.CONNECTED -> {
+                                // Recovered (or initial reach). Cancel pending grace timer.
+                                if (iceDisconnectGraceJob?.isActive == true) {
+                                    diagnostics.event("peer recovered; disconnect grace cancelled")
+                                }
+                                iceDisconnectGraceJob?.cancel()
+                                iceDisconnectGraceJob = null
                             }
 
                             PeerConnectionStateValue.CLOSED -> {
+                                iceDisconnectGraceJob?.cancel()
+                                iceDisconnectGraceJob = null
                                 logger.i { "ICE connection closed" }
                                 if (_connectionState.value !is WebRTCConnectionState.Idle) {
                                     _connectionState.value = WebRTCConnectionState.Error(
-                                        WebRTCError.ConnectionError("ICE connection closed")
+                                        WebRTCError.ConnectionError("ICE connection closed"),
                                     )
                                     cleanup()
                                 }
                             }
 
                             else -> {
-                                // Normal states (NEW, CONNECTING, CONNECTED)
+                                // Normal transient states (NEW, CONNECTING)
                             }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.e(e) { "Error collecting connection state" }
                 }
@@ -311,43 +409,41 @@ class WebRTCConnectionManager(
             val channel = pc.createDataChannel(
                 label = "ma-api",
                 ordered = true,
-                maxRetransmits = -1  // unlimited retransmits for reliability
+                maxRetransmits = -1,  // unlimited retransmits for reliability
             )
-            setupDataChannel(channel, message.sessionId ?: "")
+            setupDataChannel(channel, message.sessionId.orEmpty(), remoteId)
 
             logger.d { "Creating sendspin data channel" }
-            // sendspin: fully reliable + ordered (same as ma-api)
-            // Previously used maxRetransmits=0 which caused 15% packet loss and constant
-            // audio distortion. SIGSEGV with retransmission was likely caused by native
-            // SCTP buffer reuse while SharedFlow held a reference — fixed by copying
-            // ByteArray in DataChannelWrapper before emitting.
+            // sendspin: fully reliable + ordered (same as ma-api). `maxRetransmits=0`
+            // (unreliable) was previously tried and caused ~15% packet loss with audible
+            // distortion; reliable delivery is mandatory for the Opus framing.
             val sendspinChannel = pc.createDataChannel(
-                label = "sendspin",
-                ordered = true
+                label = SENDSPIN_CHANNEL_LABEL,
+                ordered = true,
             )
             setupSendspinDataChannel(sendspinChannel)
 
             // Create SDP offer (now includes m=application section)
-            logger.d { "Creating SDP offer" }
+            diagnostics.event("SDP offer creation started")
             val offer = pc.createOffer()
 
             // Send offer to signaling server
             logger.d { "Sending SDP offer" }
             signalingClient.sendMessage(
                 SignalingMessage.Offer(
-                    remoteId = currentRemoteId!!.rawId,
-                    sessionId = message.sessionId ?: "",
-                    data = offer
-                )
+                    remoteId = remoteId.rawId,
+                    sessionId = message.sessionId.orEmpty(),
+                    data = offer,
+                ),
             )
 
+            diagnostics.event("SDP offer sent; waiting for answer/ICE")
             _connectionState.value =
-                WebRTCConnectionState.GatheringIceCandidates(message.sessionId ?: "")
-
+                WebRTCConnectionState.GatheringIceCandidates(message.sessionId.orEmpty())
         } catch (e: Exception) {
-            logger.e(e) { "Failed to initialize peer connection" }
+            diagnostics.failure("manager peer setup failed", e)
             _connectionState.value = WebRTCConnectionState.Error(
-                WebRTCError.PeerConnectionError("Failed to initialize peer connection", e)
+                WebRTCError.PeerConnectionError("Failed to initialize peer connection", e),
             )
             cleanup()
         }
@@ -357,7 +453,7 @@ class WebRTCConnectionManager(
      * Handle Answer: Set remote description.
      */
     private suspend fun handleAnswer(message: SignalingMessage.Answer) {
-        logger.i { "Received SDP answer" }
+        diagnostics.event("SDP answer received; applying remote description")
         val pc = peerConnection
 
         if (pc == null) {
@@ -367,11 +463,11 @@ class WebRTCConnectionManager(
 
         try {
             pc.setRemoteAnswer(message.data)
-            logger.d { "Remote answer set successfully" }
+            diagnostics.event("SDP remote description applied")
         } catch (e: Exception) {
-            logger.e(e) { "Failed to set remote answer" }
+            diagnostics.failure("remote description failed", e)
             _connectionState.value = WebRTCConnectionState.Error(
-                WebRTCError.PeerConnectionError("Failed to set remote answer", e)
+                WebRTCError.PeerConnectionError("Failed to set remote answer", e),
             )
             cleanup()
         }
@@ -397,28 +493,42 @@ class WebRTCConnectionManager(
      * Handle signaling error.
      */
     private fun handleSignalingError(message: SignalingMessage.Error) {
-        logger.e { "Signaling error: ${message.error}" }
+        diagnostics.event("signaling error notification reason=omitted")
         _connectionState.value = WebRTCConnectionState.Error(
-            WebRTCError.SignalingError(message.error)
+            WebRTCError.SignalingError(message.error),
         )
-        scope.launch { cleanup() }
+        scope.launch {
+            try {
+                cleanup()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                logger.w(e) { "cleanup() after signaling error failed" }
+            }
+        }
     }
 
     /**
      * Handle peer disconnected notification.
      */
-    private fun handlePeerDisconnected(message: SignalingMessage.PeerDisconnected) {
-        logger.w { "Remote peer disconnected: ${message.sessionId}" }
+    private fun handlePeerDisconnected() {
+        diagnostics.event("remote peer disconnected notification")
         _connectionState.value = WebRTCConnectionState.Error(
-            WebRTCError.ConnectionError("Remote peer disconnected")
+            WebRTCError.ConnectionError("Remote peer disconnected"),
         )
-        scope.launch { cleanup() }
+        scope.launch {
+            try {
+                cleanup()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                logger.w(e) { "cleanup() after peer disconnect failed" }
+            }
+        }
     }
 
     /**
      * Set up the ma-api data channel: message listener and state monitoring.
      */
-    private fun setupDataChannel(channel: DataChannelWrapper, sessionId: String) {
+    private fun setupDataChannel(channel: DataChannelWrapper, sessionId: String, remoteId: RemoteId) {
         // Cleanup previous channel if exists (reconnection edge case)
         messageListenerJob?.cancel()
         dataChannelStateJob?.cancel()
@@ -432,9 +542,13 @@ class WebRTCConnectionManager(
         // Collect incoming messages from the flow
         messageListenerJob = scope.launch {
             try {
-                channel.messages.collect { msg ->
-                    _incomingMessages.emit(msg)
-                }
+                // Sole collector of the ma-api channel's ordered inbound
+                // stream; this channel carries text RPC frames only.
+                channel.inbound
+                    .filterIsInstance<DataChannelInbound.Text>()
+                    .collect { _incomingMessages.emit(it.text) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.e(e) { "Error receiving messages from data channel" }
             }
@@ -445,12 +559,15 @@ class WebRTCConnectionManager(
             try {
                 channel.state.collect { state ->
                     if (state == DataChannelState.Open) {
+                        diagnostics.event("ma-api ready; manager connected")
                         _connectionState.value = WebRTCConnectionState.Connected(
                             sessionId = sessionId,
-                            remoteId = currentRemoteId!!
+                            remoteId = remoteId,
                         )
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.e(e) { "Error monitoring data channel state" }
             }
@@ -460,9 +577,9 @@ class WebRTCConnectionManager(
     /**
      * Set up the sendspin data channel.
      *
-     * The channel is stored and monitored, but message handling is delegated to SendspinClient
-     * via the SendspinTransport abstraction. This method just ensures the channel is available
-     * and logs its state changes.
+     * This manager only holds the channel and logs its state. Every message on it belongs to
+     * the local player: `LocalPlayerEndpoints` wraps the open channel in a `SendspinTransport`
+     * and the `:sendspin-kmp` module owns the protocol on top of it.
      */
     private fun setupSendspinDataChannel(channel: DataChannelWrapper) {
         // Close previous sendspin channel if exists (reconnection edge case)
@@ -482,6 +599,8 @@ class WebRTCConnectionManager(
                         logger.i { "Sendspin data channel ready for use" }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.e(e) { "Error monitoring sendspin data channel state" }
             }
@@ -492,6 +611,7 @@ class WebRTCConnectionManager(
      * Cleanup resources.
      */
     private suspend fun cleanup() {
+        diagnostics.event("cleanup started managerState=${_connectionState.value::class.simpleName}")
         signalingMessageListenerJob?.cancel()
         signalingMessageListenerJob = null
 
@@ -513,11 +633,17 @@ class WebRTCConnectionManager(
         connectionTimeoutJob?.cancel()
         connectionTimeoutJob = null
 
+        iceDisconnectGraceJob?.cancel()
+        iceDisconnectGraceJob = null
+
         dataChannel?.close()
         dataChannel = null
 
         sendspinDataChannelInternal?.close()
         sendspinDataChannelInternal = null
+
+        httpProxyDataChannelInternal?.close()
+        httpProxyDataChannelInternal = null
 
         peerConnection?.close()
         peerConnection = null
@@ -525,5 +651,22 @@ class WebRTCConnectionManager(
         signalingClient.disconnect()
 
         currentSessionId = null
+        diagnostics.event("cleanup completed")
+    }
+
+    companion object {
+        // Long enough to absorb typical WiFi roaming and cell-tower handoffs, short enough
+        // that genuinely-dead links don't feel sticky. See the DISCONNECTED branch in the
+        // connection-state collector for rationale.
+        private const val ICE_DISCONNECT_GRACE_MS = 4_000L
+
+        // Label the server routes proxied HTTP requests on (schema 49+).
+        private const val HTTP_PROXY_CHANNEL_LABEL = "http_proxy"
+
+        // Matches the web frontend's own wait for a late-opened data channel.
+        private const val CHANNEL_OPEN_TIMEOUT_MS = 10_000L
+
+        /** Label the server bridges to its Sendspin server. */
+        const val SENDSPIN_CHANNEL_LABEL = "sendspin"
     }
 }

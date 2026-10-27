@@ -18,4 +18,7 @@ interface Transport {
     suspend fun send(message: JsonObject)
     fun connect()
     fun disconnect()
+
+    /** Call [disconnect] first; unusable after. */
+    fun close() {}
 }

@@ -1,6 +1,5 @@
 package io.music_assistant.client.services
 
-import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -9,82 +8,44 @@ import android.content.pm.ServiceInfo
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
-import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.MediaControllerCompat
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
 import co.touchlab.kermit.Logger
-import coil3.BitmapImage
-import coil3.ImageLoader
-import coil3.request.CachePolicy
-import coil3.request.ImageRequest
-import coil3.request.SuccessResult
 import io.music_assistant.client.data.MainDataSource
-import io.music_assistant.client.ui.compose.common.DataState
 import io.music_assistant.client.ui.compose.common.action.PlayerAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapNotNull
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.media_toast_playing_players
+import org.jetbrains.compose.resources.getString
 import org.koin.android.ext.android.inject
-import kotlin.math.max
 
-@OptIn(FlowPreview::class)
 class MainMediaPlaybackService : MediaBrowserServiceCompat() {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val logger = Logger.withTag("MainMediaPlaybackService")
 
-    private lateinit var mediaSessionHelper: MediaSessionHelper
     private lateinit var mediaNotificationManager: MediaNotificationManager
-    private lateinit var imageLoader: ImageLoader
+    private lateinit var transportControls: MediaControllerCompat.TransportControls
     private lateinit var audioManager: AudioManager
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var fullyInitialized = false
 
     private val dataSource: MainDataSource by inject()
-
-    // Note: Sendspin is managed by MainDataSource (singleton, shared across app)
-    private val players = dataSource.playersData
-        .mapNotNull { (it as? DataState.Data)?.data }
-        .map { list -> list.filter { it.queueInfo?.currentItem != null } }
-        .stateIn(scope, SharingStarted.Eagerly, emptyList())
-    private val activePlayerIndex = MutableStateFlow(-1)
-    private val currentPlayerData =
-        combine(players, activePlayerIndex) { players, index ->
-            // if some player is playing and we still have no valid index, show playing player
-            if (index < 0 && players.isNotEmpty()) {
-                activePlayerIndex.update { max(0, players.indexOfFirst { it.player.isPlaying }) }
-            }
-            players.getOrNull(index) ?: players.getOrNull(0)
-        }.stateIn(scope, SharingStarted.Eagerly, null)
-    private val mediaNotificationData = combine(
-        currentPlayerData.filterNotNull(),
-        players.map { it.size > 1 }
-    ) { player, moreThanOnePlayer ->
-        MediaNotificationData.from(
-            dataSource.apiClient.serverBaseUrl.value,
-            player,
-            moreThanOnePlayer
-        )
-    }
-        .distinctUntilChanged { old, new -> MediaNotificationData.areTooSimilarToUpdate(old, new) }
-        .stateIn(scope, SharingStarted.WhileSubscribed(), null)
-        .filterNotNull()
+    private val sharedSession: SharedMediaSessionManager by inject()
 
     // Debounce job to prevent double-pause when multiple BT devices are removed simultaneously
     // (e.g., wireless Android Auto disconnects both TYPE_BLUETOOTH_A2DP and TYPE_BLUETOOTH_SCO)
@@ -102,7 +63,8 @@ class MainMediaPlaybackService : MediaBrowserServiceCompat() {
                     AudioDeviceInfo.TYPE_WIRED_HEADSET,       // 3.5mm headset
                     AudioDeviceInfo.TYPE_USB_DEVICE,          // USB audio
                     AudioDeviceInfo.TYPE_USB_HEADSET,         // USB headset
-                    AudioDeviceInfo.TYPE_USB_ACCESSORY -> true
+                    AudioDeviceInfo.TYPE_USB_ACCESSORY,
+                    -> true
 
                     else -> false
                 }
@@ -117,7 +79,7 @@ class MainMediaPlaybackService : MediaBrowserServiceCompat() {
                 audioRoutingPauseJob?.cancel()
                 audioRoutingPauseJob = scope.launch {
                     delay(300)
-                    players.value.firstOrNull { it.isLocal }
+                    dataSource.localPlayer.value
                         ?.takeIf { it.player.isPlaying }
                         ?.let { localPlayer ->
                             dataSource.playerAction(localPlayer, PlayerAction.Pause)
@@ -133,27 +95,41 @@ class MainMediaPlaybackService : MediaBrowserServiceCompat() {
 
     override fun onCreate() {
         super.onCreate()
-        mediaSessionHelper = MediaSessionHelper(
-            tag = "MainMediaSession",
-            multiPlayer = true,
-            context = this,
-            callback = createCallback(),
-        )
-        mediaNotificationManager = MediaNotificationManager(this, mediaSessionHelper)
-        startForeground(
-            MediaNotificationManager.NOTIFICATION_ID,
-            mediaNotificationManager.createNotification(null)
-        )
-        sessionToken = mediaSessionHelper.getSessionToken()
-        imageLoader = ImageLoader(this)
-
-        // Register audio device callback to detect when external outputs disconnect
+        val token = sharedSession.acquire()
+        sessionToken = token
+        mediaNotificationManager = MediaNotificationManager(this, token)
+        // Notification taps go through the session callback, the same path as every other host.
+        transportControls = MediaControllerCompat(this, token).transportControls
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        try {
+            startForeground(
+                MediaNotificationManager.NOTIFICATION_ID,
+                mediaNotificationManager.createNotification(null, null),
+            )
+        } catch (e: IllegalStateException) {
+            logger.w(e) { "Cannot start foreground service from background, stopping" }
+            stopSelf()
+            return
+        }
+        // The car is connected with no local player: the session presents nothing, so there
+        // is no notification to show either. startForeground above is not skipped — the
+        // startForegroundService contract demands it before we may stop.
+        if (sharedSession.sessionBlocked.value) {
+            logger.i { "Session blocked (car connected, no local player) — no notification" }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         logger.i { "Registered audio device callback for routing change detection" }
 
+        // Repost the notification on every now-playing change. A repost is what refreshes
+        // the visible title, artist, play/pause action and largeIcon. The first (null)
+        // emission re-posts the initial placeholder.
         scope.launch {
-            mediaNotificationData.debounce(200).collect { updatePlaybackState(it) }
+            val strings = MediaSessionStrings.load()
+            sharedSession.notificationContent.collect { postNotification(it, strings) }
         }
         scope.launch {
             // Block until everything is stopped, then bail
@@ -162,151 +138,158 @@ class MainMediaPlaybackService : MediaBrowserServiceCompat() {
             stopSelf()
         }
         scope.launch {
-            // Update notification with currently selected player, if it's in the list.
-            dataSource.selectedPlayerIndex.mapNotNull { dataSource.selectedPlayer }
-                .mapNotNull { p -> players.value.indexOf(p).takeIf { it >= 0 } }
-                .collect { newIndex -> activePlayerIndex.update { newIndex } }
+            // Same, for the car-connected-without-local-player window.
+            sharedSession.sessionBlocked.filter { it }.first()
+            logger.i { "Session became blocked — removing notification" }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
-        registerNotificationDismissReceiver()
+        // Hold the Wi-Fi radio only while audio is actually playing, not for the whole service
+        // lifetime — a paused-in-background player keeps the service (for the notification) but
+        // doesn't need the radio awake.
+        scope.launch {
+            dataSource.isAnythingPlaying.collect { playing ->
+                if (playing) acquireWifiLock() else releaseWifiLock()
+            }
+        }
+        dataSource.apiClient.onPlaybackActive()
+        registerNotificationReceivers()
+        fullyInitialized = true
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+        wifiLock = wifiManager.createWifiLock(
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+            "MusicAssistant:Playback",
+        ).apply { acquire() }
+        logger.i { "Wi-Fi lock acquired for Sendspin streaming" }
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.takeIf { it.isHeld }?.let {
+            it.release()
+            logger.i { "Wi-Fi lock released" }
+        }
+        wifiLock = null
     }
 
     private val notificationDismissReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            players.value
-                .indexOfFirst { it.player.isPlaying }
-                .takeIf { it >= 0 }
-                ?.let { playingPosition ->
-                    activePlayerIndex.update { playingPosition }
-                    Toast.makeText(
-                        this@MainMediaPlaybackService,
-                        "You have playing players",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } ?: run {
+            if (dataSource.focusPlayingSessionPlayer()) {
+                scope.launch {
+                    val msg = getString(Res.string.media_toast_playing_players)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@MainMediaPlaybackService,
+                            msg,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            } else {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
         }
     }
 
-    @SuppressLint("UnspecifiedRegisterReceiverFlag")
-    private fun registerNotificationDismissReceiver() {
-        val filter = IntentFilter(ACTION_NOTIFICATION_DISMISSED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(notificationDismissReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(notificationDismissReceiver, filter)
+    private val transportReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_TRANSPORT_PLAY -> transportControls.play()
+                ACTION_TRANSPORT_PAUSE -> transportControls.pause()
+                ACTION_TRANSPORT_NEXT -> transportControls.skipToNext()
+                ACTION_TRANSPORT_PREVIOUS -> transportControls.skipToPrevious()
+                ACTION_TRANSPORT_CUSTOM -> intent.getStringExtra(EXTRA_CUSTOM_ACTION_ID)
+                    ?.let { transportControls.sendCustomAction(it, null) }
+            }
         }
     }
 
-    private fun createCallback(): MediaSessionCompat.Callback =
-        object : MediaSessionCompat.Callback() {
-            override fun onPlay() {
-                currentPlayerData.value?.let {
-                    dataSource.playerAction(it, PlayerAction.Play)
-                }
-            }
+    private fun registerNotificationReceivers() {
+        registerNotExported(notificationDismissReceiver, IntentFilter(ACTION_NOTIFICATION_DISMISSED))
+        registerNotExported(
+            transportReceiver,
+            IntentFilter().apply {
+                addAction(ACTION_TRANSPORT_PLAY)
+                addAction(ACTION_TRANSPORT_PAUSE)
+                addAction(ACTION_TRANSPORT_NEXT)
+                addAction(ACTION_TRANSPORT_PREVIOUS)
+                addAction(ACTION_TRANSPORT_CUSTOM)
+            },
+        )
+    }
 
-            override fun onPlayFromSearch(query: String?, extras: Bundle?) {
-                Logger.withTag("MainMediaPlayback").i { "onPlayFromSearch: $query (not handled)" }
-            }
-
-            override fun onPause() {
-                currentPlayerData.value?.let {
-                    dataSource.playerAction(it, PlayerAction.Pause)
-                }
-            }
-
-            override fun onSkipToNext() {
-                currentPlayerData.value?.let { dataSource.playerAction(it, PlayerAction.Next) }
-            }
-
-            override fun onSkipToPrevious() {
-                currentPlayerData.value?.let {
-                    dataSource.playerAction(it, PlayerAction.Previous)
-                }
-            }
-
-            override fun onSeekTo(pos: Long) {
-                currentPlayerData.value?.let {
-                    dataSource.playerAction(it, PlayerAction.SeekTo(pos / 1000))
-                }
-            }
-
-            override fun onCustomAction(action: String, extras: Bundle?) {
-                when (action) {
-                    "ACTION_SWITCH_PLAYER" -> switchPlayer()
-                    "ACTION_TOGGLE_SHUFFLE" -> currentPlayerData.value?.let { playerData ->
-                        playerData.queueInfo?.let {
-                            dataSource.playerAction(
-                                playerData,
-                                PlayerAction.ToggleShuffle(current = it.shuffleEnabled)
-                            )
-                        }
-                    }
-
-                    "ACTION_TOGGLE_REPEAT" -> currentPlayerData.value?.let { playerData ->
-                        playerData.queueInfo?.repeatMode?.let { repeatMode ->
-                            dataSource.playerAction(
-                                playerData,
-                                PlayerAction.ToggleRepeatMode(current = repeatMode)
-                            )
-                        }
-                    }
-                }
-            }
-        }
+    // Below API 33 a plain registerReceiver is exported. ContextCompat guards it with a
+    // signature permission there, so other apps cannot fire transport actions.
+    private fun registerNotExported(receiver: BroadcastReceiver, filter: IntentFilter) {
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
 
     override fun onGetRoot(p0: String, p1: Int, p2: Bundle?): BrowserRoot? = null
 
     override fun onLoadChildren(
         parentId: String,
-        result: Result<MutableList<MediaBrowserCompat.MediaItem>>
+        result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
     ) = Unit
 
-    private fun switchPlayer() {
-        activePlayerIndex.update {
-            if (players.value.size > 1) {
-                (it + 1) % players.value.size
-            } else 0
-        }
-    }
-
-    override fun onDestroy() {
-        unregisterReceiver(notificationDismissReceiver)
-        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        logger.i { "Unregistered audio device callback" }
-        mediaSessionHelper.release()
-        scope.cancel()
-        super.onDestroy()
-    }
-
-    private suspend fun updatePlaybackState(data: MediaNotificationData) {
-        val bitmap = data.imageUrl?.let {
-            ((imageLoader.execute(
-                ImageRequest.Builder(this@MainMediaPlaybackService)
-                    .data(it)
-                    .memoryCachePolicy(CachePolicy.ENABLED)
-                    .memoryCacheKey(it)
-                    .build()
-            ) as? SuccessResult)?.image as? BitmapImage)?.bitmap
-        }
-        mediaSessionHelper.updatePlaybackState(data, bitmap)
-        val notification =
-            mediaNotificationManager.createNotification(bitmap)
+    private fun postNotification(
+        content: SharedMediaSessionManager.NotificationContent?,
+        strings: MediaSessionStrings,
+    ) {
+        val notification = mediaNotificationManager.createNotification(content, strings)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 MediaNotificationManager.NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
             )
         } else {
             startForeground(MediaNotificationManager.NOTIFICATION_ID, notification)
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // If nothing is actively playing, stop this service when the user closes the app from
+        // recents. Playing state is left running so background audio continues uninterrupted.
+        // onDestroy releases the local audio stack.
+        if (!dataSource.isAnythingPlaying.value) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    override fun onDestroy() {
+        if (fullyInitialized) {
+            releaseWifiLock()
+            unregisterReceiver(notificationDismissReceiver)
+            unregisterReceiver(transportReceiver)
+            audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
+            logger.i { "Unregistered audio device callback" }
+            dataSource.apiClient.onPlaybackInactive()
+            // Stopping this foreground service unpins the process so the OS can reclaim a
+            // backgrounded, idle app. We deliberately do NOT tear down the app-scoped Sendspin
+            // transport here: the connection lives as long as the process does. Only explicit
+            // user action (Sendspin disabled) or OS process death severs it — never a mere
+            // notification swipe / service stop.
+        }
+        sharedSession.release()
+        scope.cancel()
+        super.onDestroy()
+    }
+
     companion object {
         const val ACTION_NOTIFICATION_DISMISSED =
             "io.music_assistant.client.ACTION_NOTIFICATION_DISMISSED"
+        const val ACTION_TRANSPORT_PLAY = "io.music_assistant.client.ACTION_TRANSPORT_PLAY"
+        const val ACTION_TRANSPORT_PAUSE = "io.music_assistant.client.ACTION_TRANSPORT_PAUSE"
+        const val ACTION_TRANSPORT_NEXT = "io.music_assistant.client.ACTION_TRANSPORT_NEXT"
+        const val ACTION_TRANSPORT_PREVIOUS = "io.music_assistant.client.ACTION_TRANSPORT_PREVIOUS"
+        const val ACTION_TRANSPORT_CUSTOM = "io.music_assistant.client.ACTION_TRANSPORT_CUSTOM"
+        const val EXTRA_CUSTOM_ACTION_ID = "custom_action_id"
     }
 }

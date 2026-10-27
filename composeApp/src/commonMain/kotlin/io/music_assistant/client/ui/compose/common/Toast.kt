@@ -7,8 +7,13 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,12 +30,12 @@ import kotlinx.coroutines.delay
 
 enum class ToastDuration(val millis: Long) {
     SHORT(2000L),
-    LONG(3500L)
+    LONG(3500L),
 }
 
 data class ToastData(
     val message: String,
-    val duration: ToastDuration = ToastDuration.SHORT
+    val duration: ToastDuration = ToastDuration.SHORT,
 )
 
 class ToastState {
@@ -54,7 +59,7 @@ fun rememberToastState(): ToastState {
 @Composable
 fun ToastHost(
     toastState: ToastState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     val currentToast by toastState.currentToast
 
@@ -67,22 +72,24 @@ fun ToastHost(
     }
 
     Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.BottomCenter
+        modifier = modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
+        contentAlignment = Alignment.BottomCenter,
     ) {
         AnimatedVisibility(
             visible = currentToast != null,
             enter = slideInVertically(
-                initialOffsetY = { it }
+                initialOffsetY = { it },
             ) + fadeIn(),
             exit = slideOutVertically(
-                targetOffsetY = { it }
-            ) + fadeOut()
+                targetOffsetY = { it },
+            ) + fadeOut(),
         ) {
             currentToast?.let { toast ->
                 ToastItem(
                     message = toast.message,
-                    modifier = Modifier.padding(16.dp)
+                    modifier = Modifier.padding(16.dp),
                 )
             }
         }
@@ -92,15 +99,15 @@ fun ToastHost(
 @Composable
 private fun ToastItem(
     message: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
             .background(
                 color = Color.Black.copy(alpha = 0.8f),
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(8.dp),
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Text(
             text = message,

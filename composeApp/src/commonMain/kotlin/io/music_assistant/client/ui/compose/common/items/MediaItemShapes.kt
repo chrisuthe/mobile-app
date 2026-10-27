@@ -1,11 +1,12 @@
+// Shape geometry constants (cut ratios, hole radius factors) — visually-driven values.
+@file:Suppress("MagicNumber")
+
 package io.music_assistant.client.ui.compose.common.items
 
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -19,60 +20,22 @@ import kotlin.math.sin
  * Shape that cuts a vertical strip from the right side.
  * Used for album vinyl record effect.
  */
-class CutStripShape() : Shape {
+class CutStripShape : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
-        density: Density
+        density: Density,
     ): Outline {
-        return Outline.Generic(Path().apply {
+        return Outline.Generic(
+            Path().apply {
             // Defines the album cover area, excluding the rightmost strip
             moveTo(0f, 0f)
             lineTo(size.width * 0.9f, 0f)
             lineTo(size.width * 0.9f, size.height)
             lineTo(0f, size.height)
             close()
-        })
-    }
-}
-
-/**
- * Shape that cuts a circular hole in the center.
- * Used for album vinyl record effect.
- */
-class HoleShape() : Shape {
-    override fun createOutline(
-        size: Size,
-        layoutDirection: LayoutDirection,
-        density: Density
-    ): Outline {
-        val radiusPx = size.width * 0.17f
-        val center = size.width * 0.5f
-
-        // Define the full cover path
-        val coverPath = Path().apply {
-            addRect(Rect(Offset.Zero, size))
-        }
-
-        // Define the hole path
-        val holePath = Path().apply {
-            val rect = Rect(
-                left = center - radiusPx,
-                top = center - radiusPx,
-                right = center + radiusPx,
-                bottom = center + radiusPx
-            )
-            addOval(oval = rect)
-        }
-
-        // Subtract hole from cover
-        val finalPath = Path.combine(
-            operation = PathOperation.Difference,
-            path1 = coverPath,
-            path2 = holePath
+        },
         )
-
-        return Outline.Generic(finalPath)
     }
 }
 
@@ -80,14 +43,15 @@ class HoleShape() : Shape {
  * Shape that cuts a vertical strip from the left side.
  * Used for notebook/playlist spiral binding effect.
  */
-class NotebookCutShape() : Shape {
+class NotebookCutShape : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
-        density: Density
+        density: Density,
     ): Outline {
-        return Outline.Generic(Path().apply {
-            val stripPx = size.width * 0.1f
+        return Outline.Generic(
+            Path().apply {
+            val stripPx = size.width * STRIP_FRACTION
 
             // Defines the content area, excluding the leftmost strip
             moveTo(stripPx, 0f)
@@ -95,7 +59,13 @@ class NotebookCutShape() : Shape {
             lineTo(size.width, size.height)
             lineTo(stripPx, size.height)
             close()
-        })
+        },
+        )
+    }
+
+    companion object {
+        /** Fraction of the width reserved for the binding strip on the left. */
+        const val STRIP_FRACTION = 0.1f
     }
 }
 
@@ -103,13 +73,14 @@ class NotebookCutShape() : Shape {
  * Shape that cuts the top-left corner.
  * Used for podcast concentric circles effect.
  */
-class CornerCutShape() : Shape {
+class CornerCutShape : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
-        density: Density
+        density: Density,
     ): Outline {
-        return Outline.Generic(Path().apply {
+        return Outline.Generic(
+            Path().apply {
             val cutPx = size.width / 3f
 
             // Start from top-left corner after the cut
@@ -119,7 +90,8 @@ class CornerCutShape() : Shape {
             lineTo(0f, size.height)
             lineTo(0f, cutPx)
             close()
-        })
+        },
+        )
     }
 }
 
@@ -131,9 +103,10 @@ class BookSpineShape(private val spineWidth: Dp) : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
-        density: Density
+        density: Density,
     ): Outline {
-        return Outline.Generic(Path().apply {
+        return Outline.Generic(
+            Path().apply {
             val spinePx = with(density) { spineWidth.toPx() }
 
             // Content area excluding the spine strip on the left
@@ -142,7 +115,8 @@ class BookSpineShape(private val spineWidth: Dp) : Shape {
             lineTo(size.width, size.height)
             lineTo(spinePx, size.height)
             close()
-        })
+        },
+        )
     }
 }
 
@@ -154,9 +128,10 @@ class WavyHexagonShape : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
-        density: Density
+        density: Density,
     ): Outline {
-        return Outline.Generic(Path().apply {
+        return Outline.Generic(
+            Path().apply {
             val width = size.width
             val height = size.height
             val centerX = width / 2f
@@ -168,7 +143,7 @@ class WavyHexagonShape : Shape {
                 val angle = (i * 60f - 30f) * (PI / 180f).toFloat()
                 Offset(
                     centerX + radius * cos(angle),
-                    centerY + radius * sin(angle)
+                    centerY + radius * sin(angle),
                 )
             }
 
@@ -205,6 +180,7 @@ class WavyHexagonShape : Shape {
             }
 
             close()
-        })
+        },
+        )
     }
 }

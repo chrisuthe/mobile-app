@@ -1,22 +1,16 @@
 package io.music_assistant.client.ui.compose.common.providers
 
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Hardware
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.NetworkWifi
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import co.touchlab.kermit.Logger
-import compose.icons.TablerIcons
-import compose.icons.tablericons.Microphone
-import io.ktor.util.decodeBase64Bytes
+import kotlin.io.encoding.Base64
 
 /**
  * Sealed class representing different types of provider icons
  */
 sealed class ProviderIconModel {
     /**
-     * MDI (Material Design Icon) type - uses TablerIcons
+     * Pre-built [ImageVector] type - for app-local icons (e.g. the "library" bookshelf).
      */
     data class Mdi(val icon: ImageVector, val tint: Color = Color.White) : ProviderIconModel()
 
@@ -53,39 +47,15 @@ sealed class ProviderIconModel {
     }
 
     companion object Companion {
-        /**
-         * Factory method to create ProviderIconType from ProviderManifest
-         *
-         * Rules:
-         * 1. If icon is not null, use corresponding MDI Icon
-         * 2. Else if iconSvg contains "base64", extract and decode base64 PNG
-         * 3. Otherwise, encode iconSvg as SVG bytes
-         * 4. If both are null, return null
-         */
-        fun from(mdiIcon: String?, iconSvg: String?): ProviderIconModel? {
-            // Rule 1: If icon is not null, use MDI icon
-            if (mdiIcon != null) {
-                val icon = when (mdiIcon) {
-                    "harddisk" -> Icons.Default.Hardware
-                    "network" -> Icons.Default.NetworkWifi
-                    "podcast" -> TablerIcons.Microphone
-                    "mdi:radio",
-                    "radio" -> Icons.Default.Mic
-                    else -> {
-                        Logger.e("Cannot find MDI icon for $mdiIcon.")
-                        return null
-                    }
-                }
-                return Mdi(icon)
-            }
-            return iconSvg?.let { svgString ->
+        fun fromSvg(svg: String): ProviderIconModel? {
+            return svg.let { svgString ->
                 val b64i = svgString.indexOf("base64,")
                 if (b64i > 0) {
-                    val base64Data = iconSvg.substring(b64i + 7) // Skip "base64,"
+                    val base64Data = svg.substring(b64i + 7) // Skip "base64,"
                     // Remove any closing quotes or XML tags
                     val cleanedData = base64Data.substringBefore("\"").substringBefore("<")
                     try {
-                        val bytes = cleanedData.decodeBase64Bytes()
+                        val bytes = Base64.decode(cleanedData)
                         Png(bytes)
                     } catch (e: Exception) {
                         Logger.e("Cannot decode base64 PNG: ${e.message}")

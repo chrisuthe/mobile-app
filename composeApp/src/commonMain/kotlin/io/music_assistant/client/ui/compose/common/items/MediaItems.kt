@@ -1,33 +1,35 @@
+// Compose layout values (sizes, alphas) are visual design tokens.
+@file:Suppress("MagicNumber")
+
 package io.music_assistant.client.ui.compose.common.items
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.FeaturedPlayList
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Explicit
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Podcasts
-import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -42,97 +44,114 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import io.music_assistant.client.data.model.client.AppMediaItem
-import io.music_assistant.client.data.model.client.PlayableItem
+import io.music_assistant.client.data.model.client.ImageType
+import io.music_assistant.client.data.model.client.items.Album
+import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.Artist
+import io.music_assistant.client.data.model.client.items.Audiobook
+import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
+import io.music_assistant.client.data.model.client.items.PlayableItem
+import io.music_assistant.client.data.model.client.items.Playlist
+import io.music_assistant.client.data.model.client.items.Podcast
+import io.music_assistant.client.data.model.client.items.PodcastEpisode
+import io.music_assistant.client.data.model.client.items.RecommendationFolder
+import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.model.client.items.image
+import io.music_assistant.client.settings.ViewMode
+import io.music_assistant.client.ui.compose.common.icons.ArtistIcon
+import io.music_assistant.client.ui.compose.common.icons.BookAudioIcon
+import io.music_assistant.client.ui.compose.common.icons.GenreIcon
+import io.music_assistant.client.ui.compose.common.icons.PlaylistIcon
+import io.music_assistant.client.ui.compose.common.icons.TrackIcon
 import io.music_assistant.client.ui.compose.common.painters.rememberPlaceholderPainter
 import io.music_assistant.client.ui.compose.common.painters.rememberVinylRecordPainter
 import io.music_assistant.client.ui.compose.common.painters.rememberWaveformPainter
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import io.music_assistant.client.ui.compose.grid.GridItem
+import io.music_assistant.client.ui.theme.favoriteTint
+import io.music_assistant.client.utils.rowImageSize
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.cd_album_item
+import musicassistantclient.composeapp.generated.resources.cd_favorite
+import musicassistantclient.composeapp.generated.resources.cd_fully_played
+import musicassistantclient.composeapp.generated.resources.cd_in_progress
+import musicassistantclient.composeapp.generated.resources.cd_vinyl_record
+import org.jetbrains.compose.resources.stringResource
+
+/** Opacity applied to media items that can't be played (server `is_playable == false`). */
+internal const val DISABLED_ITEM_ALPHA = 0.3f
 
 /**
  * Artist media item with circular image.
  *
  * @param item The artist item to display
- * @param serverUrl Server URL for image loading
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
  */
 @Composable
 fun ArtistGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Artist,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Artist) -> Unit,
-    onLongClick: (AppMediaItem.Artist) -> Unit,
-    showSubtitle: Boolean,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Artist,
+    onClick: (Artist) -> Unit,
+    onLongClick: (Artist) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            ArtistImage(96.dp, item, serverUrl)
+            ArtistImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.width(96.dp),
-            text = item.name,
-            style = MaterialTheme.typography.bodyMedium,
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
             textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
         )
-        if (showSubtitle) {
-            Text(
-                modifier = Modifier.width(96.dp),
-                text = item.subtitle.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
 @Composable
 private fun ArtistImage(
-    itemSize: Dp,
-    item: AppMediaItem.Artist,
-    serverUrl: String?
+    item: Artist,
 ) {
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .clip(CircleShape)
-            .background(primaryContainer)
+            .background(primaryContainer),
     ) {
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.Default.Mic
+            icon = ArtistIcon,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         )
     }
 }
@@ -141,68 +160,56 @@ private fun ArtistImage(
  * Album media item with vinyl record design.
  *
  * @param item The album item to display
- * @param serverUrl Server URL for image loading
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
  */
 @Composable
 fun AlbumGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Album,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Album) -> Unit,
-    onLongClick: (AppMediaItem.Album) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Album,
+    onClick: (Album) -> Unit,
+    onLongClick: (Album) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
+    subtitle: AlbumSubtitle = AlbumSubtitle.ARTISTS,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            AlbumImage(96.dp, item, serverUrl)
+            AlbumImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.width(96.dp),
-            text = item.name,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.subtitleText(subtitle).orEmpty(),
             textAlign = TextAlign.Center,
         )
-        if (showSubtitle) {
-            Text(
-                modifier = Modifier.width(96.dp),
-                text = item.subtitle.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
 @Composable
+private fun Album.subtitleText(subtitle: AlbumSubtitle): String? = when (subtitle) {
+    AlbumSubtitle.ARTISTS -> localizedSubtitle()
+    AlbumSubtitle.YEAR -> year?.toString()
+}
+
+@Composable
 private fun AlbumImage(
-    itemSize: Dp,
-    item: AppMediaItem.Album,
-    serverUrl: String?
+    item: Album,
 ) {
     val primaryContainer = MaterialTheme.colorScheme.primary
     val background = MaterialTheme.colorScheme.background
     Box(
         modifier = Modifier
-            .size(itemSize)
-            .clip(RoundedCornerShape(8.dp))
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp)),
     ) {
         val vinylRecord = rememberVinylRecordPainter(
             backgroundColor = background,
@@ -210,24 +217,22 @@ private fun AlbumImage(
         )
 
         val cutStripShape = remember { CutStripShape() }
-        val holeShape = remember { HoleShape() }
 
         Image(
             painter = vinylRecord,
-            contentDescription = "Vinyl Record",
-            modifier = Modifier.fillMaxSize().clip(CircleShape)
+            contentDescription = stringResource(Res.string.cd_vinyl_record),
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
         )
 
         AsyncImage(
             placeholder = vinylRecord,
             fallback = vinylRecord,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
-                .clip(cutStripShape)
-                .clip(holeShape)
+                .clip(cutStripShape),
         )
     }
 }
@@ -236,69 +241,51 @@ private fun AlbumImage(
  * Playlist media item.
  *
  * @param item The playlist item to display
- * @param serverUrl Server URL for image loading
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
+
  */
 @Composable
 fun PlaylistGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Playlist,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Playlist) -> Unit,
-    onLongClick: (AppMediaItem.Playlist) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)? = null
+    item: Playlist,
+    onClick: (Playlist) -> Unit,
+    onLongClick: (Playlist) -> Unit,
+    providerIconFetcher: ProviderIconFetcher? = null,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            PlaylistImage(96.dp, item, serverUrl)
+            PlaylistImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.width(96.dp),
-            text = item.name,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
             textAlign = TextAlign.Center,
         )
-        if (showSubtitle) {
-            Text(
-                modifier = Modifier.width(96.dp),
-                text = item.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
 @Composable
 private fun PlaylistImage(
-    itemSize: Dp,
-    item: AppMediaItem.Playlist,
-    serverUrl: String?
+    item: Playlist,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
-            .clip(RoundedCornerShape(8.dp))
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp)),
     ) {
         val notebookCutShape = remember { NotebookCutShape() }
 
@@ -307,33 +294,30 @@ private fun PlaylistImage(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(notebookCutShape)
-                .background(primaryContainer)
+                .background(primaryContainer),
         )
 
-        // Draw binding ellipses in the cut area
-        val ellipseRadius = 4.dp
+        // Draw binding dots, sized and positioned relative to the cut strip
         val ellipseCount = 7
         Canvas(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         ) {
-            val ellipseRadiusPx = ellipseRadius.toPx()
-            val topPadding = ellipseRadiusPx * 2
-            val bottomPadding = ellipseRadiusPx * 2
-            val availableHeight = size.height - topPadding - bottomPadding
+            val bindingWidth = size.width * NotebookCutShape.STRIP_FRACTION
+            val dotRadius = bindingWidth * 0.4f
+            val centerX = bindingWidth / 2f
+            val padding = dotRadius * 2
+            val availableHeight = size.height - padding * 2
             val spacing = if (ellipseCount > 1) {
                 availableHeight / (ellipseCount - 1)
             } else {
                 0f
             }
-            val bindingWidth = 10.dp
 
-            // Draw ellipses in the binding strip area
             for (i in 0 until ellipseCount) {
-                val y = topPadding + (i * spacing)
                 drawCircle(
                     color = primary,
-                    radius = ellipseRadiusPx,
-                    center = Offset(x = bindingWidth.toPx() / 2f, y = y)
+                    radius = dotRadius,
+                    center = Offset(x = centerX, y = padding + i * spacing),
                 )
             }
         }
@@ -342,17 +326,17 @@ private fun PlaylistImage(
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.AutoMirrored.Filled.FeaturedPlayList
+            icon = PlaylistIcon,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
-                .clip(notebookCutShape)
+                .clip(notebookCutShape),
         )
     }
 }
@@ -360,62 +344,45 @@ private fun PlaylistImage(
 @Composable
 fun PodcastGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Podcast,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Podcast) -> Unit,
-    onLongClick: (AppMediaItem.Podcast) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)? = null
+    item: Podcast,
+    onClick: (Podcast) -> Unit,
+    onLongClick: (Podcast) -> Unit,
+    providerIconFetcher: ProviderIconFetcher? = null,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            PodcastImage(96.dp, item, serverUrl)
+            PodcastImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.width(96.dp),
-            text = item.name,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
             textAlign = TextAlign.Center,
         )
-        if (showSubtitle) {
-            Text(
-                modifier = Modifier.width(96.dp),
-                text = item.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
 @Composable
 private fun PodcastImage(
-    itemSize: Dp,
-    item: AppMediaItem.Podcast,
-    serverUrl: String?
+    item: Podcast,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
-            .clip(RoundedCornerShape(8.dp))
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp)),
     ) {
         val cornerCutShape = remember { CornerCutShape() }
 
@@ -424,16 +391,15 @@ private fun PodcastImage(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(cornerCutShape)
-                .background(primaryContainer)
+                .background(primaryContainer),
         )
 
         // Draw concentric circles in the cut corner area (centered on cut edge, rippling outward)
         val circleCount = 10
-        val cutSize = itemSize / 3
         Canvas(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         ) {
-            val center = cutSize.toPx() * 0.7f
+            val center = (size.width / 3f) * 0.7f
             val spacing = center / circleCount
 
             for (i in 1 until circleCount) {
@@ -441,7 +407,7 @@ private fun PodcastImage(
                     color = primary,
                     radius = i * spacing,
                     center = Offset(center, center),
-                    style = Stroke(width = 2f)
+                    style = Stroke(width = 2f),
                 )
             }
         }
@@ -450,17 +416,17 @@ private fun PodcastImage(
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.Default.Podcasts
+            icon = Icons.Default.Podcasts,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
-                .clip(cornerCutShape)
+                .clip(cornerCutShape),
         )
     }
 }
@@ -469,64 +435,60 @@ private fun PodcastImage(
  * Track media item with waveform overlay.
  *
  * @param item The track item to display
- * @param serverUrl Server URL for image loading
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
+
  */
 @Composable
 internal fun TrackGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Track,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Track) -> Unit,
-    onLongClick: (AppMediaItem.Track) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Track,
+    onClick: (Track) -> Unit,
+    onLongClick: (Track) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            TrackImage(96.dp, item, serverUrl)
+            TrackImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
-        GridPlayableItemLabels(item, 96.dp, showSubtitle)
+        GridPlayableItemLabels(item)
     }
 }
 
 @Composable
 private fun TrackImage(
-    itemSize: Dp,
     item: PlayableItem,
-    serverUrl: String?,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .clip(RoundedCornerShape(8.dp))
-            .background(primaryContainer)
+            .background(primaryContainer),
     ) {
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.Default.MusicNote
+            icon = TrackIcon,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         )
 
         // Draw waveform overlay at the bottom
@@ -534,8 +496,8 @@ private fun TrackImage(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(itemSize / 3)
-                .align(Alignment.BottomCenter)
+                .fillMaxHeight(1f / 3f)
+                .align(Alignment.BottomCenter),
         ) {
             with(waveformPainter) {
                 draw(size)
@@ -547,67 +509,64 @@ private fun TrackImage(
 @Composable
 internal fun PodcastEpisodeGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.PodcastEpisode,
-    serverUrl: String?,
-    onClick: (AppMediaItem.PodcastEpisode) -> Unit,
-    onLongClick: (AppMediaItem.PodcastEpisode) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: PodcastEpisode,
+    onClick: (PodcastEpisode) -> Unit,
+    onLongClick: (PodcastEpisode) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            PodcastEpisodeImage(96.dp, item, serverUrl)
+            PodcastEpisodeImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
             ProgressBadge(
                 fullyPlayed = item.fullyPlayed,
-                resumePositionMs = item.resumePositionMs
+                resumePositionMs = item.resumePositionMs,
             )
         }
-        GridPlayableItemLabels(item, 96.dp, showSubtitle)
+        GridPlayableItemLabels(item)
     }
 }
 
 @Composable
 private fun PodcastEpisodeImage(
-    itemSize: Dp,
     item: PlayableItem,
-    serverUrl: String?,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .clip(RoundedCornerShape(8.dp))
-            .background(primaryContainer)
+            .background(primaryContainer),
     ) {
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.Default.Podcasts
+            icon = Icons.Default.Podcasts,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         )
 
         // Draw concentric circles from bottom center
         val circleCount = 8
         Canvas(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         ) {
             val bottomCenter = Offset(size.width / 2f, size.height)
             val maxRadius = size.height / 2f
@@ -620,7 +579,7 @@ private fun PodcastEpisodeImage(
                         color = primary.copy(alpha = alpha),
                         radius = i * spacing,
                         center = bottomCenter,
-                        style = Stroke(width = 3f)
+                        style = Stroke(width = 3f),
                     )
                 }
             }
@@ -629,66 +588,62 @@ private fun PodcastEpisodeImage(
 }
 
 /**
- * Radio station media item with wavy octagon shape.
+ * Live stream media item (radio station or input source) with wavy octagon shape.
  *
- * @param item The radio station item to display
- * @param serverUrl Server URL for image loading
+ * @param item The live item to display
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
+
  */
 @Composable
-internal fun RadioGridItem(
+internal fun <T> LiveStreamGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.RadioStation,
-    serverUrl: String?,
-    onClick: (AppMediaItem.RadioStation) -> Unit,
-    onLongClick: (AppMediaItem.RadioStation) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
-) {
+    item: T,
+    onClick: (T) -> Unit,
+    onLongClick: (T) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
+) where T : AppMediaItem, T : PlayableItem {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            RadioImage(96.dp, item, serverUrl)
+            LiveStreamImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         }
-        GridPlayableItemLabels(item, 96.dp, showSubtitle)
+        GridPlayableItemLabels(item)
     }
 }
 
 @Composable
-private fun RadioImage(
-    itemSize: Dp,
+private fun LiveStreamImage(
     item: PlayableItem,
-    serverUrl: String?
 ) {
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .clip(WavyHexagonShape())
-            .background(primaryContainer)
+            .background(primaryContainer),
     ) {
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.Default.Radio
+            icon = item.defaultIcon,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
         )
     }
 }
@@ -697,73 +652,55 @@ private fun RadioImage(
  * Audiobook media item with book spine design.
  *
  * @param item The audiobook item to display
- * @param serverUrl Server URL for image loading
  * @param onClick Click handler
- * @param showSubtitle Whether to show subtitle (default true)
+
  */
 @Composable
 internal fun AudiobookGridItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Audiobook,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Audiobook) -> Unit,
-    onLongClick: (AppMediaItem.Audiobook) -> Unit,
-    showSubtitle: Boolean = true,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Audiobook,
+    onClick: (Audiobook) -> Unit,
+    onLongClick: (Audiobook) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     GridItem(
         modifier = modifier,
+        description = contentDescription(item),
         onClick = { onClick(item) },
         onLongClick = { onLongClick(item) },
     ) {
         Box {
-            AudiobookImage(96.dp, item, serverUrl)
+            AudiobookImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
             ProgressBadge(
                 fullyPlayed = item.fullyPlayed,
-                resumePositionMs = item.resumePositionMs
+                resumePositionMs = item.resumePositionMs,
             )
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.width(96.dp),
-            text = item.name,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
             textAlign = TextAlign.Center,
         )
-        if (showSubtitle) {
-            Text(
-                modifier = Modifier.width(96.dp),
-                text = item.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 
 @Composable
 private fun AudiobookImage(
-    itemSize: Dp,
-    item: AppMediaItem.Audiobook,
-    serverUrl: String?
+    item: AppMediaItem,
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
-            .size(itemSize)
-            .clip(RoundedCornerShape(8.dp))
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp)),
     ) {
         val spineWidth = 8.dp
         val bookSpineShape = remember(spineWidth) { BookSpineShape(spineWidth) }
@@ -773,101 +710,81 @@ private fun AudiobookImage(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(bookSpineShape)
-                .background(primaryContainer)
+                .background(primaryContainer),
         )
 
         // Draw spine strip on the left
         Box(
             modifier = Modifier
                 .width(spineWidth)
-                .height(itemSize)
-                .background(primary)
+                .fillMaxHeight()
+                .background(primary),
         )
 
         // Draw artwork (clipped to exclude spine)
         val placeholder = rememberPlaceholderPainter(
             backgroundColor = primaryContainer,
             iconColor = onPrimaryContainer,
-            icon = Icons.AutoMirrored.Filled.MenuBook
+            icon = BookAudioIcon,
         )
         AsyncImage(
             placeholder = placeholder,
             fallback = placeholder,
-            model = item.imageInfo?.url(serverUrl),
-            contentDescription = item.name,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
-                .clip(bookSpineShape)
+                .clip(bookSpineShape),
         )
     }
 }
 
 @Composable
-private fun GridPlayableItemLabels(
-    item: PlayableItem,
-    itemSize: Dp,
-    showSubtitle: Boolean
-) {
+private fun GridPlayableItemLabels(item: PlayableItem) {
+    val subtitleText = (item as? AppMediaItem)?.localizedSubtitle()
     Spacer(Modifier.height(4.dp))
-    Text(
-        text = item.name,
-        style = MaterialTheme.typography.bodyMedium,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.width(itemSize),
+    MediaItemLabels(
+        title = "${item.displayName}${
+            item.version
+                ?.trim()?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+        }",
+        subtitle = subtitleText,
         textAlign = TextAlign.Center,
     )
-    if (showSubtitle) {
-        Text(
-            text = item.subtitle.orEmpty(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(itemSize),
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
-/**
- * Common wrapper for media items with click handling.
- */
-@Composable
-private fun GridItem(
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Column(
-        modifier = modifier
-            .wrapContentSize()
-            .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        content()
-    }
 }
 
 @Composable
-fun Badges(
+fun BoxScope.Badges(
     item: AppMediaItem,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
-    modifier: Modifier
+    providerIconFetcher: ProviderIconFetcher?,
+    badgeSize: Dp = 16.dp,
+    badgePadding: Dp = 0.dp,
 ) {
+    val modifier = Modifier.padding(badgePadding).size(badgeSize)
+    val bottomEnd = modifier.align(Alignment.BottomEnd)
     if (item.favorite == true) {
         Icon(
-            modifier = modifier,
+            modifier = bottomEnd,
             imageVector = Icons.Filled.Favorite,
-            contentDescription = "Favorite",
-            tint = Color(0xFFEF7BC4)
+            contentDescription = stringResource(Res.string.cd_favorite),
+            tint = favoriteTint,
         )
     } else {
-        providerIconFetcher?.invoke(modifier.background(Color.Gray, CircleShape), item.provider)
+        providerIconFetcher?.invoke(
+            bottomEnd.background(Color.Gray, CircleShape),
+            item.provider,
+            "dark",
+        )
+    }
+    if (item.isExplicit) {
+        Icon(
+            modifier = modifier.align(Alignment.TopEnd)
+                .background(Color.White, RoundedCornerShape(2.dp)),
+            imageVector = Icons.Filled.Explicit,
+            contentDescription = stringResource(Res.string.cd_favorite),
+            tint = Color.Black,
+        )
     }
 }
 
@@ -889,14 +806,15 @@ fun BoxScope.ProgressBadge(
                     .size(18.dp)
                     .background(
                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
-                        CircleShape
+                        CircleShape,
                     )
                     .padding(2.dp),
                 imageVector = Icons.Default.Check,
-                contentDescription = "Fully played",
-                tint = MaterialTheme.colorScheme.primary
+                contentDescription = stringResource(Res.string.cd_fully_played),
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
+
         resumePositionMs != null && resumePositionMs > 0 -> {
             Icon(
                 modifier = Modifier
@@ -904,12 +822,12 @@ fun BoxScope.ProgressBadge(
                     .size(18.dp)
                     .background(
                         MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f),
-                        CircleShape
+                        CircleShape,
                     )
                     .padding(2.dp),
                 imageVector = Icons.Default.Schedule,
-                contentDescription = "In progress",
-                tint = MaterialTheme.colorScheme.tertiary
+                contentDescription = stringResource(Res.string.cd_in_progress),
+                tint = MaterialTheme.colorScheme.tertiary,
             )
         }
     }
@@ -917,267 +835,541 @@ fun BoxScope.ProgressBadge(
 
 // ── Row layout ────────────────────────────────────────────────────────────────
 
-private val ROW_IMAGE_SIZE = 48.dp
-
 @Composable
 internal fun TrackRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Track,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Track) -> Unit,
-    onLongClick: (AppMediaItem.Track) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Track,
+    showTrackNumber: Boolean,
+    onClick: (Track) -> Unit,
+    onLongClick: (Track) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            TrackImage(ROW_IMAGE_SIZE, item, serverUrl)
-            Badges(
-                item = item,
-                providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
-            )
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = if (showTrackNumber) {
+            item.trackNumber?.toString()?.let { trackNumber ->
+                {
+                    Text(
+                        modifier = Modifier.align(Alignment.Center),
+                        text = trackNumber,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        } else {
+            {
+                TrackImage(item)
+                Badges(
+                    item = item,
+                    providerIconFetcher = providerIconFetcher,
+                )
+            }
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
 internal fun AlbumRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Album,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Album) -> Unit,
-    onLongClick: (AppMediaItem.Album) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Album,
+    onClick: (Album) -> Unit,
+    onLongClick: (Album) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
+    subtitle: AlbumSubtitle = AlbumSubtitle.ARTISTS,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            AlbumImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.subtitleText(subtitle),
+        description = contentDescription(item),
+        prefixContent = {
+            AlbumImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
 internal fun ArtistRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Artist,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Artist) -> Unit,
-    onLongClick: (AppMediaItem.Artist) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Artist,
+    onClick: (Artist) -> Unit,
+    onLongClick: (Artist) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            ArtistImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            ArtistImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
 internal fun PlaylistRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Playlist,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Playlist) -> Unit,
-    onLongClick: (AppMediaItem.Playlist) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Playlist,
+    onClick: (Playlist) -> Unit,
+    onLongClick: (Playlist) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            PlaylistImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            PlaylistImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
 internal fun PodcastRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Podcast,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Podcast) -> Unit,
-    onLongClick: (AppMediaItem.Podcast) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Podcast,
+    onClick: (Podcast) -> Unit,
+    onLongClick: (Podcast) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            PodcastImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            PodcastImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
 internal fun PodcastEpisodeRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.PodcastEpisode,
-    serverUrl: String?,
-    onClick: (AppMediaItem.PodcastEpisode) -> Unit,
-    onLongClick: (AppMediaItem.PodcastEpisode) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: PodcastEpisode,
+    onClick: (PodcastEpisode) -> Unit,
+    onLongClick: (PodcastEpisode) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            PodcastEpisodeImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            PodcastEpisodeImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
             ProgressBadge(
                 fullyPlayed = item.fullyPlayed,
-                resumePositionMs = item.resumePositionMs
+                resumePositionMs = item.resumePositionMs,
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
 @Composable
-internal fun RadioRowItem(
+internal fun <T> LiveStreamRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.RadioStation,
-    serverUrl: String?,
-    onClick: (AppMediaItem.RadioStation) -> Unit,
-    onLongClick: (AppMediaItem.RadioStation) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
-) {
+    item: T,
+    onClick: (T) -> Unit,
+    onLongClick: (T) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
+) where T : AppMediaItem, T : PlayableItem {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            RadioImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            LiveStreamImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
+}
+
+@Composable
+fun GenreGridItem(
+    modifier: Modifier = Modifier,
+    item: Genre,
+    onClick: (Genre) -> Unit,
+    onLongClick: (Genre) -> Unit,
+    providerIconFetcher: ProviderIconFetcher? = null,
+) {
+    GridItem(
+        modifier = modifier,
+        description = contentDescription(item),
+        onClick = { onClick(item) },
+        onLongClick = { onLongClick(item) },
+    ) {
+        Box {
+            GenreImage(item)
+            Badges(
+                item = item,
+                providerIconFetcher = providerIconFetcher,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun GenreImage(
+    item: Genre,
+) {
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(primaryContainer),
+    ) {
+        val placeholder = rememberPlaceholderPainter(
+            backgroundColor = primaryContainer,
+            iconColor = onPrimaryContainer,
+            icon = GenreIcon,
+        )
+        AsyncImage(
+            placeholder = placeholder,
+            fallback = placeholder,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+@Composable
+internal fun GenreRowItem(
+    modifier: Modifier = Modifier,
+    item: Genre,
+    onClick: (Genre) -> Unit,
+    onLongClick: (Genre) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
+) {
+    RowItem(
+        modifier = modifier,
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            GenreImage(item)
+            Badges(
+                item = item,
+                providerIconFetcher = providerIconFetcher,
+            )
+        },
+        onClick = { onClick(item) },
+        onLongClick = { onLongClick(item) },
+    )
+}
+
+/**
+ * Browse-only cell for a [RecommendationFolder]: icon + name. Tapping it navigates one level
+ * deeper. Folders never appear in library lists, so this is exercised only by the Browse screen.
+ */
+@Composable
+internal fun FolderCell(
+    modifier: Modifier = Modifier,
+    item: RecommendationFolder,
+    viewMode: ViewMode = ViewMode.GRID,
+    onClick: (RecommendationFolder) -> Unit,
+    onLongClick: (RecommendationFolder) -> Unit,
+) {
+    when (viewMode) {
+        ViewMode.LIST -> RowItem(
+            modifier = modifier.fillMaxWidth(),
+            name = item.displayName,
+            subtitle = null,
+            description = contentDescription(item),
+            prefixContent = { FolderImage(item) },
+            onClick = { onClick(item) },
+            onLongClick = { onLongClick(item) },
+        )
+
+        ViewMode.GRID -> GridItem(
+            modifier = modifier,
+            description = contentDescription(item),
+            onClick = { onClick(item) },
+            onLongClick = { onLongClick(item) },
+        ) {
+            FolderImage(item)
+            Spacer(Modifier.height(4.dp))
+            MediaItemLabels(
+                title = item.displayName,
+                subtitle = null,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderImage(item: RecommendationFolder) {
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(primaryContainer),
+    ) {
+        val placeholder = rememberPlaceholderPainter(
+            backgroundColor = primaryContainer,
+            iconColor = onPrimaryContainer,
+            icon = Icons.Default.Folder,
+        )
+        AsyncImage(
+            placeholder = placeholder,
+            fallback = placeholder,
+            model = item.image(ImageType.THUMB)?.url,
+            contentDescription = item.displayName,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }
 
 @Composable
 internal fun AudiobookRowItem(
     modifier: Modifier = Modifier,
-    item: AppMediaItem.Audiobook,
-    serverUrl: String?,
-    onClick: (AppMediaItem.Audiobook) -> Unit,
-    onLongClick: (AppMediaItem.Audiobook) -> Unit,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?
+    item: Audiobook,
+    onClick: (Audiobook) -> Unit,
+    onLongClick: (Audiobook) -> Unit,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     RowItem(
         modifier = modifier,
-        name = item.name,
-        subtitle = item.subtitle,
-        imageContent = {
-            AudiobookImage(ROW_IMAGE_SIZE, item, serverUrl)
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = {
+            AudiobookImage(item)
             Badges(
                 item = item,
                 providerIconFetcher = providerIconFetcher,
-                modifier = Modifier.align(Alignment.BottomEnd).size(16.dp)
             )
             ProgressBadge(
                 fullyPlayed = item.fullyPlayed,
-                resumePositionMs = item.resumePositionMs
+                resumePositionMs = item.resumePositionMs,
             )
         },
         onClick = { onClick(item) },
-        onLongClick = { onLongClick(item) }
+        onLongClick = { onLongClick(item) },
     )
 }
 
+/** A series: the audiobook cover of its first book, no badges (it has no provider or progress). */
 @Composable
-private fun RowItem(
+internal fun MediaCollectionGridItem(
+    modifier: Modifier = Modifier,
+    item: MediaCollection,
+    onClick: (MediaCollection) -> Unit,
+    onLongClick: (MediaCollection) -> Unit,
+) {
+    GridItem(
+        modifier = modifier,
+        description = contentDescription(item),
+        onClick = { onClick(item) },
+        onLongClick = { onLongClick(item) },
+    ) {
+        AudiobookImage(item)
+        Spacer(Modifier.height(4.dp))
+        MediaItemLabels(
+            title = item.displayName,
+            subtitle = item.localizedSubtitle().orEmpty(),
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+internal fun MediaCollectionRowItem(
+    modifier: Modifier = Modifier,
+    item: MediaCollection,
+    onClick: (MediaCollection) -> Unit,
+    onLongClick: (MediaCollection) -> Unit,
+) {
+    RowItem(
+        modifier = modifier,
+        name = item.displayName,
+        subtitle = item.localizedSubtitle(),
+        description = contentDescription(item),
+        prefixContent = { AudiobookImage(item) },
+        onClick = { onClick(item) },
+        onLongClick = { onLongClick(item) },
+    )
+}
+
+private val MEDIA_TITLE_WEIGHT = FontWeight.SemiBold
+private const val SUBTITLE_ALPHA = 0.6f
+
+/**
+ * Canonical title + optional subtitle for every list/grid media item.
+ * Title is emphasised via weight; the subtitle is dimmed with alpha rather than a
+ * distinct color, keeping the hierarchy sleek and consistent app-wide.
+ */
+@Composable
+internal fun MediaItemLabels(
+    title: String,
+    subtitle: String?,
+    textAlign: TextAlign? = null,
+    titleMaxLines: Int = 1,
+) {
+    Text(
+        modifier = Modifier.fillMaxWidth(),
+        text = title,
+        style = mediaItemTitleStyle(),
+        fontWeight = MEDIA_TITLE_WEIGHT,
+        textAlign = textAlign,
+        maxLines = titleMaxLines,
+        overflow = TextOverflow.Ellipsis,
+    )
+
+    val subtitleStyle = mediaItemSubtitleStyle()
+    val subtitleLineHeight = with(LocalDensity.current) {
+        subtitleStyle.lineHeight.toDp()
+    }
+
+    Box(modifier = Modifier.height(subtitleLineHeight)) {
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                modifier = Modifier.fillMaxWidth(),
+                text = subtitle,
+                style = subtitleStyle,
+                fontWeight = MEDIA_TITLE_WEIGHT,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = SUBTITLE_ALPHA),
+                textAlign = textAlign,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * The shared library row: leading image slot, title/subtitle, optional trailing slot.
+ *
+ * Takes strings and slots rather than an [AppMediaItem], so a row that is not a media item —
+ * an AI Radio station, say — can reuse the exact same metrics and typography.
+ *
+ * @param enabled false makes the row inert, ripple included. For a row that carries its action
+ *   in [suffixContent] instead, so a tap on the body is not answered with a ripple.
+ * @param suffixContent trailing slot, rendered after the weighted label column. When present it
+ *   may hold a control of its own, so the row's description is scoped to the labels — see below.
+ */
+@Composable
+internal fun RowItem(
     modifier: Modifier = Modifier,
     name: String,
     subtitle: String?,
-    imageContent: @Composable BoxScope.() -> Unit,
+    description: String,
+    prefixContent: @Composable (BoxScope.() -> Unit)?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    enabled: Boolean = true,
+    suffixContent: @Composable (RowScope.() -> Unit)? = null,
 ) {
-    val titleStyle = MaterialTheme.typography.bodyMedium
-    val twoLineHeight = with(LocalDensity.current) { (titleStyle.lineHeight.toPx() * 2).toDp() }
+    // clearAndSetSemantics wipes every descendant's semantics too. On a whole-row tap target
+    // that is what we want — one node, one description. But a trailing control would be made
+    // invisible and unreachable to accessibility services by it, so a row that has one scopes
+    // the description to its labels and lets that control keep its own.
+    val describe = Modifier.clearAndSetSemantics { contentDescription = description }
+    val describesWholeRow = suffixContent == null
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .then(if (describesWholeRow) describe else Modifier),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(modifier = Modifier.size(ROW_IMAGE_SIZE)) { imageContent() }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Box(
-                modifier = Modifier.fillMaxWidth().height(twoLineHeight),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(
-                    text = name,
-                    style = titleStyle,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (!subtitle.isNullOrEmpty()) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        prefixContent?.let {
+            Box(modifier = Modifier.size(rowImageSize())) { it() }
+            Spacer(Modifier.width(12.dp))
         }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .then(if (describesWholeRow) Modifier else describe),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            MediaItemLabels(
+                title = name,
+                subtitle = subtitle,
+                titleMaxLines = 2,
+            )
+        }
+        suffixContent?.invoke(this)
+    }
+}
+
+@Composable
+internal fun mediaItemTitleStyle(): TextStyle {
+    return MaterialTheme.typography.bodyMedium
+}
+
+@Composable
+internal fun mediaItemSubtitleStyle(): TextStyle {
+    return MaterialTheme.typography.bodySmall
+}
+
+@Composable
+private fun contentDescription(appMediaItem: AppMediaItem): String {
+    return if (appMediaItem is Album) {
+        stringResource(Res.string.cd_album_item, appMediaItem.displayName, appMediaItem.provider)
+    } else {
+        appMediaItem.displayName
     }
 }

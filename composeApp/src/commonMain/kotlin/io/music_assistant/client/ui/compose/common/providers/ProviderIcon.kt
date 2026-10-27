@@ -2,15 +2,18 @@ package io.music_assistant.client.ui.compose.common.providers
 
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
-import coil3.ImageLoader
-import coil3.PlatformContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
-import coil3.svg.SvgDecoder
+import io.music_assistant.client.ui.compose.provider.ProviderViewModel
+import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.cd_provider_icon
+import org.jetbrains.compose.resources.stringResource
 
 /**
  * Composable to render a provider icon based on its type
@@ -27,61 +30,53 @@ fun ProviderIcon(
         is ProviderIconModel.Mdi -> {
             Icon(
                 imageVector = providerIconModel.icon,
-                contentDescription = "Provider Icon",
+                contentDescription = stringResource(Res.string.cd_provider_icon),
                 modifier = modifier,
-                tint = providerIconModel.tint
+                tint = providerIconModel.tint,
             )
         }
 
         is ProviderIconModel.Png -> {
-            // Render PNG using Coil - bytes are already decoded
-            val context = LocalPlatformContext.current
-            val imageLoader = remember {
-                getImageLoader(context)
-            }
-
             AsyncImage(
-                model = ImageRequest.Builder(context)
+                model = ImageRequest.Builder(LocalPlatformContext.current)
                     .data(providerIconModel.imageBytes)
                     .build(),
-                contentDescription = "Provider Icon",
-                imageLoader = imageLoader,
+                contentDescription = stringResource(Res.string.cd_provider_icon),
                 modifier = modifier,
-                contentScale = ContentScale.Fit
+                contentScale = ContentScale.Fit,
             )
         }
 
         is ProviderIconModel.Svg -> {
-            // Render SVG using Coil - bytes are already encoded
-            val context = LocalPlatformContext.current
-            val imageLoader = remember {
-                getImageLoader(context)
-            }
-
             AsyncImage(
-                model = ImageRequest.Builder(context)
+                model = ImageRequest.Builder(LocalPlatformContext.current)
                     .data(providerIconModel.svgBytes)
                     .build(),
-                contentDescription = "Provider Icon",
-                imageLoader = imageLoader,
+                contentDescription = stringResource(Res.string.cd_provider_icon),
                 modifier = modifier,
-                contentScale = ContentScale.Fit
+                contentScale = ContentScale.Fit,
             )
         }
 
-        null -> {
-            // No icon to show
-        }
+        null -> Unit
     }
 }
 
-/**
- * Create an ImageLoader configured for SVG support
- */
-private fun getImageLoader(context: PlatformContext): ImageLoader {
-    return ImageLoader.Builder(context)
-        .components {
-            add(SvgDecoder.Factory())
+typealias ProviderIconFetcher = (@Composable (modifier: Modifier, providerDomain: String, variant: String) -> Unit)
+fun ProviderViewModel.providerIconFetcher(): (
+    @Composable (
+    modifier: Modifier,
+    providerDomain: String,
+    variant: String,
+) -> Unit
+) {
+    return { modifier, providerDomain, variant ->
+        val providerIconModel by remember {
+            this.getProviderIcon(providerDomain, variant)
+        }.collectAsStateWithLifecycle()
+
+        if (providerIconModel != null) {
+            ProviderIcon(modifier, providerIconModel)
         }
-        .build()
+    }
 }

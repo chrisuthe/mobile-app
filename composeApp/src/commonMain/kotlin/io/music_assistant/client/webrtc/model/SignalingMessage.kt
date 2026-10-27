@@ -11,7 +11,7 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Messages exchanged with the WebRTC signaling server.
@@ -30,7 +30,7 @@ sealed interface SignalingMessage {
     @Serializable
     @SerialName("connect-request")
     data class ConnectRequest(
-        @SerialName("remoteId") val remoteId: String
+        @SerialName("remoteId") val remoteId: String,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "connect-request"
@@ -45,7 +45,7 @@ sealed interface SignalingMessage {
     data class Connected(
         @SerialName("sessionId") val sessionId: String? = null,
         @SerialName("remoteId") val remoteId: String? = null,
-        @SerialName("iceServers") val iceServers: List<IceServer> = emptyList()
+        @SerialName("iceServers") val iceServers: List<IceServer> = emptyList(),
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "connected"
@@ -60,7 +60,7 @@ sealed interface SignalingMessage {
     data class Offer(
         @SerialName("remoteId") val remoteId: String,
         @SerialName("sessionId") val sessionId: String,
-        @SerialName("data") val data: SessionDescription
+        @SerialName("data") val data: SessionDescription,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "offer"
@@ -74,7 +74,7 @@ sealed interface SignalingMessage {
     @SerialName("answer")
     data class Answer(
         @SerialName("sessionId") val sessionId: String,
-        @SerialName("data") val data: SessionDescription
+        @SerialName("data") val data: SessionDescription,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "answer"
@@ -91,7 +91,7 @@ sealed interface SignalingMessage {
     data class IceCandidate(
         @SerialName("remoteId") val remoteId: String? = null,
         @SerialName("sessionId") val sessionId: String,
-        @SerialName("data") val data: IceCandidateData
+        @SerialName("data") val data: IceCandidateData,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "ice-candidate"
@@ -105,7 +105,7 @@ sealed interface SignalingMessage {
     @SerialName("error")
     data class Error(
         @SerialName("error") val error: String,
-        @SerialName("sessionId") val sessionId: String? = null
+        @SerialName("sessionId") val sessionId: String? = null,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "error"
@@ -118,7 +118,7 @@ sealed interface SignalingMessage {
     @Serializable
     @SerialName("peer-disconnected")
     data class PeerDisconnected(
-        @SerialName("sessionId") val sessionId: String? = null
+        @SerialName("sessionId") val sessionId: String? = null,
     ) : SignalingMessage {
         @SerialName("type")
         override val type: String = "peer-disconnected"
@@ -132,7 +132,7 @@ sealed interface SignalingMessage {
     @SerialName("ping")
     data class Ping(
         @SerialName("type")
-        override val type: String = "ping"
+        override val type: String = "ping",
     ) : SignalingMessage
 
     /**
@@ -143,7 +143,7 @@ sealed interface SignalingMessage {
     @SerialName("pong")
     data class Pong(
         @SerialName("type")
-        override val type: String = "pong"
+        override val type: String = "pong",
     ) : SignalingMessage
 
     /**
@@ -153,7 +153,7 @@ sealed interface SignalingMessage {
      */
     @Serializable
     data class Unknown(
-        override val type: String
+        override val type: String,
     ) : SignalingMessage
 }
 
@@ -162,13 +162,14 @@ sealed interface SignalingMessage {
  * The public signaling server sends a single string, while Nabu Casa sends an array.
  */
 private object FlexibleUrlListSerializer : KSerializer<List<String>> {
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     override val descriptor: SerialDescriptor = listSerialDescriptor(serialDescriptor<String>())
 
     override fun deserialize(decoder: Decoder): List<String> {
         val jsonDecoder = decoder as JsonDecoder
         return when (val element = jsonDecoder.decodeJsonElement()) {
-            is JsonArray -> element.map { it.jsonPrimitive.content }
-            is JsonPrimitive -> listOf(element.content)
+            is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            is JsonPrimitive -> listOfNotNull(element.contentOrNull)
             else -> emptyList()
         }
     }
@@ -189,7 +190,7 @@ data class IceServer(
     @Serializable(with = FlexibleUrlListSerializer::class)
     @SerialName("urls") val urls: List<String>,
     @SerialName("username") val username: String? = null,
-    @SerialName("credential") val credential: String? = null
+    @SerialName("credential") val credential: String? = null,
 )
 
 /**
@@ -198,7 +199,7 @@ data class IceServer(
 @Serializable
 data class SessionDescription(
     @SerialName("sdp") val sdp: String,
-    @SerialName("type") val type: String // "offer" or "answer"
+    @SerialName("type") val type: String, // "offer" or "answer"
 )
 
 /**
@@ -210,6 +211,6 @@ data class SessionDescription(
 @Serializable
 data class IceCandidateData(
     @SerialName("candidate") val candidate: String,
-    @SerialName("sdpMid") val sdpMid: String?,
-    @SerialName("sdpMLineIndex") val sdpMLineIndex: Int?
+    @SerialName("sdpMid") val sdpMid: String? = null,
+    @SerialName("sdpMLineIndex") val sdpMLineIndex: Int? = null,
 )
